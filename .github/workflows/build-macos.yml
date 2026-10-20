@@ -24,6 +24,8 @@
 #  说明：
 #    - JUCE 版本锁定 7.0.12（项目 CMakeLists 使用了 JUCE 8 已移除的
 #      juce_generate_juce_header，故不能用 JUCE 8）。
+#    - 注：GitHub Actions 的 if: 条件不允许读取 secrets 上下文，因此是否签名
+#      改为在 step 的 shell 脚本内部用环境变量判断（官方推荐做法）。
 # ===========================================================================
 name: Build macOS
 
@@ -101,14 +103,17 @@ jobs:
         run: cmake --build build_mac --config Release
 
       # =====================================================================
-      #  签名（仅当配置了证书 Secret 时执行）
+      #  签名（仅当配置了证书 Secret 时执行；否则步骤内部自动跳过）
       # =====================================================================
       - name: Import Apple signing certificate
-        if: ${{ secrets.MACOS_CERT_P12 != '' }}
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
+          if [ -z "$CERT_P12" ]; then
+            echo "[-] MACOS_CERT_P12 未配置，跳过签名"
+            exit 0
+          fi
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -124,11 +129,16 @@ jobs:
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Codesign binaries (VST3 / AU / Standalone)
-        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
+          if [ -z "$KEYCHAIN_PATH" ]; then
+            echo "[-] 未导入证书，跳过 codesign"
+            exit 0
+          fi
           # 优先用显式指定的身份，否则自动检测 Developer ID Application
-          if [ -n "${{ secrets.MACOS_SIGN_IDENTITY }}" ]; then
-            IDENTITY="${{ secrets.MACOS_SIGN_IDENTITY }}"
+          if [ -n "$MACOS_SIGN_IDENTITY" ]; then
+            IDENTITY="$MACOS_SIGN_IDENTITY"
           else
             IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
               | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
@@ -150,10 +160,15 @@ jobs:
 
       # ---- 签名 dmg（如已配置证书）----
       - name: Codesign .dmg
-        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
-          if [ -n "${{ secrets.MACOS_SIGN_IDENTITY }}" ]; then
-            IDENTITY="${{ secrets.MACOS_SIGN_IDENTITY }}"
+          if [ -z "$KEYCHAIN_PATH" ]; then
+            echo "[-] 未导入证书，跳过 dmg 签名"
+            exit 0
+          fi
+          if [ -n "$MACOS_SIGN_IDENTITY" ]; then
+            IDENTITY="$MACOS_SIGN_IDENTITY"
           else
             IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
               | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
@@ -163,12 +178,15 @@ jobs:
 
       # ---- 公证 + 装订（需证书 + Apple ID 系列 Secret）----
       - name: Notarize and staple
-        if: ${{ secrets.MACOS_CERT_P12 != '' && secrets.APPLE_ID != '' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$KEYCHAIN_PATH" ]; then
+            echo "[-] 未配置公证所需 Secret，跳过 notarize"
+            exit 0
+          fi
           DMG="FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg"
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
