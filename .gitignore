@@ -1,0 +1,16 @@
+# ---- 构建产物 ----
+build/
+build_mac/
+out/
+*.dmg
+
+# ---- JUCE（本地放根目录时忽略；CI 会自动下载，无需提交）----
+JUCE/
+
+# ---- 编辑器 / 系统 ----
+.vs/
+*.xcuserdata
+.DS_Store
+
+# ---- 资源备份目录（不参与构建）----
+Resources/backup/

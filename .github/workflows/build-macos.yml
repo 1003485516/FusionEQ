@@ -1,0 +1,207 @@
+# ===========================================================================
+#  Fusion EQ — macOS 自动构建 + 打包 + 签名 + 公证（GitHub Actions）
+#
+#  触发：
+#    - 推送以 v 开头的 tag（如 v1.0.0）→ 自动出包
+#    - 在 Actions 页面点 "Run workflow" 手动触发
+#    - 推送到 main 分支（仅构建校验，也出 dmg）
+#
+#  产物：
+#    - FusionEQ-1.0.0-macOS.dmg（通用二进制 x86_64 + arm64，拖拽式安装盘）
+#    - 在 Actions 的 "Artifacts" 里下载，或在打 tag 时可在 Release 中下载
+#
+#  签名 / 公证（可选，强烈建议用于正式分发）：
+#    在仓库 Settings → Secrets and variables → Actions 中配置：
+#      MACOS_CERT_P12              : Developer ID Application 证书导出的 .p12，转为 base64
+#                                    （本地：openssl base64 -in cert.p12 -out cert.txt，贴内容）
+#      MACOS_CERT_PASSWORD         : .p12 的导出密码
+#      APPLE_ID                    : 你的 Apple ID（邮箱）
+#      APPLE_APP_SPECIFIC_PASSWORD : appleid.apple.com 生成的「专用密码」
+#      APPLE_TEAM_ID               : 10 位开发者团队 ID
+#    配置后：插件会被签名 + 公证 + 装订，用户双击即可安装，无需「仍要打开」。
+#    未配置这些 Secret 时，自动跳过签名，仅产出未签名 dmg（与之前行为一致）。
+#
+#  说明：
+#    - JUCE 版本锁定 7.0.12（项目 CMakeLists 使用了 JUCE 8 已移除的
+#      juce_generate_juce_header，故不能用 JUCE 8）。
+# ===========================================================================
+name: Build macOS
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+
+# 允许上传产物；打 tag 时发布到 Release 需要写权限
+permissions:
+  contents: write
+
+env:
+  JUCE_VERSION: "7.0.12"
+
+jobs:
+  build-macos:
+    name: macOS Universal (VST3 + AU + Standalone)
+    runs-on: macos-14          # ARM runner，可交叉编译 x86_64，产出通用二进制
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- 工具链 ----
+      - name: Install build tools (cmake, ninja)
+        run: |
+          brew install cmake ninja || brew upgrade cmake ninja
+          cmake --version
+          ninja --version
+
+      # ---- 读取版本号（与 CMakeLists 保持一致）----
+      - name: Read version
+        id: ver
+        run: |
+          V=$(grep -Eo 'project\([^)]*VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt \
+                | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          echo "version=${V:-1.0.0}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${V:-1.0.0}" >> "$GITHUB_ENV"
+
+      # ---- 下载并缓存 JUCE ----
+      - name: Cache JUCE
+        id: cache-juce
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/JUCE
+          key: juce-${{ env.JUCE_VERSION }}
+
+      - name: Download JUCE ${{ env.JUCE_VERSION }}
+        if: steps.cache-juce.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o juce.tar.gz \
+            "https://github.com/juce-framework/JUCE/archive/refs/tags/${{ env.JUCE_VERSION }}.tar.gz"
+          tar -xzf juce.tar.gz
+          mv "JUCE-${{ env.JUCE_VERSION }}" JUCE
+          rm juce.tar.gz
+          echo "JUCE_DIR=${{ github.workspace }}/JUCE" >> "$GITHUB_ENV"
+
+      - name: Export JUCE_DIR (from cache)
+        if: steps.cache-juce.outputs.cache-hit == 'true'
+        run: echo "JUCE_DIR=${{ github.workspace }}/JUCE" >> "$GITHUB_ENV"
+
+      # ---- 配置（通用二进制）----
+      - name: Configure (CMake)
+        run: |
+          cmake -B build_mac -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DJUCE_DIR="$JUCE_DIR"
+
+      # ---- 构建 ----
+      - name: Build
+        run: cmake --build build_mac --config Release
+
+      # =====================================================================
+      #  签名（仅当配置了证书 Secret 时执行）
+      # =====================================================================
+      - name: Import Apple signing certificate
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo -n "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A \
+            -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Codesign binaries (VST3 / AU / Standalone)
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        run: |
+          # 优先用显式指定的身份，否则自动检测 Developer ID Application
+          if [ -n "${{ secrets.MACOS_SIGN_IDENTITY }}" ]; then
+            IDENTITY="${{ secrets.MACOS_SIGN_IDENTITY }}"
+          else
+            IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          fi
+          echo "[*] Signing identity: $IDENTITY"
+          ART=build_mac/FusionEQ_artefacts/Release
+          codesign --force --options runtime --timestamp \
+            --sign "$IDENTITY" "$ART/VST3/Fusion EQ.vst3"
+          codesign --force --options runtime --timestamp \
+            --sign "$IDENTITY" "$ART/AU/Fusion EQ.component"
+          codesign --force --options runtime --timestamp \
+            --sign "$IDENTITY" "$ART/Standalone/Fusion EQ.app"
+
+      # =====================================================================
+      #  打包 dmg（复用本地脚本；dmg 内为已签名产物）
+      # =====================================================================
+      - name: Package .dmg
+        run: ./installer/make_dmg.sh
+
+      # ---- 签名 dmg（如已配置证书）----
+      - name: Codesign .dmg
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        run: |
+          if [ -n "${{ secrets.MACOS_SIGN_IDENTITY }}" ]; then
+            IDENTITY="${{ secrets.MACOS_SIGN_IDENTITY }}"
+          else
+            IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          fi
+          codesign --force --sign "$IDENTITY" \
+            "FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg"
+
+      # ---- 公证 + 装订（需证书 + Apple ID 系列 Secret）----
+      - name: Notarize and staple
+        if: ${{ secrets.MACOS_CERT_P12 != '' && secrets.APPLE_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG="FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+      # ---- 生成 SHA256 校验和（须在公证/装订之后，哈希才准确）----
+      - name: Generate SHA256 checksum
+        run: |
+          DMG="FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg"
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+          echo "=== $DMG.sha256 ==="
+          cat "$DMG.sha256"
+
+      # ---- 上传产物 ----
+      - name: Upload artifact (dmg + checksum)
+        uses: actions/upload-artifact@v4
+        with:
+          name: FusionEQ-macOS
+          path: |
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg.sha256
+          if-no-files-found: error
+
+      # ---- 打 tag 时同时发到 Release ----
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

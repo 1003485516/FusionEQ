@@ -1,0 +1,13 @@
+[0/2] Re-checking globbed directories...
+[1/6] Building CXX object CMakeFiles/FusionEQ.dir/Source/SpectrumDisplay.cpp.obj
+clang-23: warning: argument unused during compilation: '-static-libgcc' [-Wunused-command-line-argument]
+clang-23: warning: argument unused during compilation: '-static-libstdc++' [-Wunused-command-line-argument]
+[2/6] Building CXX object CMakeFiles/FusionEQ.dir/Source/PluginEditor.cpp.obj
+clang-23: warning: argument unused during compilation: '-static-libgcc' [-Wunused-command-line-argument]
+clang-23: warning: argument unused during compilation: '-static-libstdc++' [-Wunused-command-line-argument]
+[3/6] Building CXX object CMakeFiles/FusionEQ.dir/Source/PluginProcessor.cpp.obj
+clang-23: warning: argument unused during compilation: '-static-libgcc' [-Wunused-command-line-argument]
+clang-23: warning: argument unused during compilation: '-static-libstdc++' [-Wunused-command-line-argument]
+[4/6] Linking CXX static library "FusionEQ_artefacts\Release\libFusion EQ_SharedCode.a"
+[5/6] Linking CXX shared module "FusionEQ_artefacts\Release\VST3\Fusion EQ.vst3\Contents\x86_64-win\Fusion EQ.vst3"
+removing moduleinfo.json
