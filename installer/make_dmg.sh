@@ -7,8 +7,6 @@
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$PROJ/build_mac"
-ART="$BUILD/FusionEQ_artefacts/Release"
 APP_NAME="Fusion EQ"
 
 # 版本号优先用环境变量（CI 传入），否则从 CMakeLists.txt 的 project(... VERSION x.y.z) 解析，再回退 1.0.0
@@ -20,11 +18,32 @@ fi
 VERSION="${VERSION:-1.0.0}"
 
 DMG="$PROJ/FusionEQ-${VERSION}-macOS.dmg"
+
+# ---- 定位产物目录（兼容 build_mac 与 build 两种目录名）----
+VST3=""
+for CAND_BUILD in "$PROJ/build_mac" "$PROJ/build"; do
+    VST3=$(find "$CAND_BUILD" -name "*.vst3" -maxdepth 5 2>/dev/null | head -1)
+    [ -n "$VST3" ] && break
+done
+if [ -z "$VST3" ]; then
+    echo "[X] 未找到 VST3 产物，请先运行构建（./installer/build_mac.sh 或 CI）。"
+    echo "    已搜索目录：$PROJ/build_mac  $PROJ/build"
+    echo "    （如需自定义构建目录，请在调用本脚本前 export BUILD_DIR=你的目录）"
+    exit 1
+fi
+# 由找到的 vst3 反推 Release 目录、构建目录
+ART="$(dirname "$(dirname "$VST3")")"      # .../Release
+BUILD="$(dirname "$(dirname "$ART")")"      # build_mac 或 build
+echo "[*] 找到产物目录: $ART"
+
+# 兼容：本脚本支持以环境变量 BUILD_DIR 覆盖
 STAGING="$BUILD/dmg_staging"
 
 # ---- 检查产物 ----
 if [ ! -d "$ART/VST3/$APP_NAME.vst3" ]; then
-    echo "[X] 未找到 VST3，请先运行 ./installer/build_mac.sh"
+    echo "[X] 已在 $ART 找到 VST3 包，但路径与预期不符（期望 $ART/VST3/$APP_NAME.vst3）"
+    echo "    实际内容："
+    ls -la "$ART" 2>/dev/null || true
     exit 1
 fi
 
