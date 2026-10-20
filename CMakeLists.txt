@@ -48,14 +48,21 @@ add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/JUCE)
 #   Windows：VST3 + Standalone
 # ---------------------------------------------------------------------------
 if(APPLE)
-    set(FUSION_FORMATS "VST3 AU Standalone")
+    # 注意：必须是 CMake「列表」（分号分隔 / 无引号多值），
+    # 不能写成 "VST3 AU Standalone" —— 带引号的空格字符串会被当成【单个值】，
+    # CMake 只按分号拆分，JUCE 会因匹配不到任何格式而不创建任何插件目标
+    # （表现：只产出 SharedCode 静态库，没有 VST3/AU/Standalone，Ninja 里找不到 FusionEQ_VST3）。
+    set(FUSION_FORMATS VST3 AU Standalone)
     # 最低部署目标（覆盖绝大多数仍在用的 Mac）
     if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
         set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "macOS deployment target" FORCE)
     endif()
 else()
-    set(FUSION_FORMATS "VST3 Standalone")
+    set(FUSION_FORMATS VST3 Standalone)
 endif()
+
+# 调试用：确认最终传给 juce_add_plugin 的格式列表
+message(STATUS "插件格式 FORMATS = ${FUSION_FORMATS}")
 
 # ---------------------------------------------------------------------------
 # 插件目标
