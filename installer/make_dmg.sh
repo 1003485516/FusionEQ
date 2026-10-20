@@ -20,9 +20,11 @@ VERSION="${VERSION:-1.0.0}"
 DMG="$PROJ/FusionEQ-${VERSION}-macOS.dmg"
 
 # ---- 定位产物目录（兼容 build_mac 与 build 两种目录名）----
+# 注意：用 -print -quit 取首个匹配并干净退出，避免 find|head 触发 SIGPIPE
+#       被 set -o pipefail + set -e 误判为失败而静默中止。
 VST3=""
 for CAND_BUILD in "$PROJ/build_mac" "$PROJ/build"; do
-    VST3=$(find "$CAND_BUILD" -name "*.vst3" -maxdepth 5 2>/dev/null | head -1)
+    VST3="$(find "$CAND_BUILD" -name "*.vst3" -maxdepth 5 -print -quit 2>/dev/null)"
     [ -n "$VST3" ] && break
 done
 if [ -z "$VST3" ]; then
