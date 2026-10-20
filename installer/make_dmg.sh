@@ -29,13 +29,32 @@ for CAND in "$PROJ/build_mac" "$PROJ/build" "$PROJ"; do
     VST3="$(find "$CAND" -name "*.vst3" -maxdepth 6 2>/dev/null | head -1)"
     [ -n "$VST3" ] && break
 done
+# ---- 若未找到：插件格式目标可能未被默认 all 构建，尝试显式补建再找一次 ----
 if [ -z "$VST3" ]; then
-    echo "[X] 未找到 VST3 产物，请先运行构建（./installer/build_mac.sh 或 CI）。"
+    echo "[!] 初次未找到 VST3，尝试显式构建插件格式目标（VST3/AU/Standalone）..."
+    BUILDDIR=""
+    for CAND in "$PROJ/build_mac" "$PROJ/build"; do
+        if [ -d "$CAND" ]; then BUILDDIR="$CAND"; break; fi
+    done
+    if [ -n "$BUILDDIR" ]; then
+        echo "=== Ninja 目标列表（插件格式相关，诊断用）==="
+        ninja -C "$BUILDDIR" -t targets 2>/dev/null \
+            | grep -oE "^[A-Za-z0-9_]+:" | sort -u \
+            | grep -iE "vst3|^au|standalone|fusioneq_" | head -30
+        echo "=== 执行: cmake --build --target FusionEQ_VST3 FusionEQ_AU FusionEQ_Standalone ==="
+        cmake --build "$BUILDDIR" --config Release \
+            --target FusionEQ_VST3 FusionEQ_AU FusionEQ_Standalone \
+            || echo "[!] 显式构建插件目标失败，请对照上方目标列表"
+        # 补建后重新查找
+        VST3="$(find "$BUILDDIR" -name "*.vst3" -maxdepth 6 2>/dev/null | head -1)"
+    fi
+fi
+
+if [ -z "$VST3" ]; then
+    echo "[X] 仍未找到 VST3 产物，请先运行构建（./installer/build_mac.sh 或 CI）。"
     echo "    已搜索目录: $PROJ/build_mac  $PROJ/build  $PROJ(递归)"
-    echo "----- $PROJ 顶层内容 -----"
-    ls -la "$PROJ" 2>/dev/null || true
-    echo "----- build_mac/FusionEQ_artefacts 内容（若存在）-----"
-    ls -laR "$PROJ/build_mac/FusionEQ_artefacts" 2>/dev/null | head -40 || true
+    echo "----- build_mac/FusionEQ_artefacts/Release 内容 -----"
+    ls -laR "$PROJ/build_mac/FusionEQ_artefacts/Release" 2>/dev/null | head -40
     exit 1
 fi
 
