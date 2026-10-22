@@ -1133,6 +1133,7 @@ private:
     bool mpHighPair = false;            // 后两段 = HighShelf（前两段 = LowShelf）
     MpToggle mpIn { 3 };                // BOOST / OUT / CUT
     MpToggle mpShape { 2 };             // SHELF / BELL
+    float lastOffGain = 0.0f;           // 旁通时上次见到的增益（检测“关着拧增益”）
 
     /* Neve 频点档位刻度：档位值（环绕标注）+ 当前档跟踪 */
     juce::Array<float> snapFreqs;
@@ -1153,7 +1154,19 @@ private:
         {
             const bool  on = proc.apvts.getRawParameterValue (IDs::bOn (index))->load() > 0.5f;
             const float gv = proc.apvts.getRawParameterValue (IDs::bGain (index))->load();
-            mpIn.setState (! on ? 1 : (gv < -0.001f ? 2 : 0), false);
+
+            /* 段旁通（OUT）时直接拧 GAIN：负增益自动落到 CUT、正增益自动落到
+               BOOST —— 拧钮即刻生效，不用再先拨杆（宿主自动化同样适用） */
+            if (! on && std::abs (gv) > 0.001f && gv != lastOffGain)
+            {
+                lastOffGain = gv;
+                applyMpIn (gv < 0.0f ? 2 : 0);
+            }
+            else
+            {
+                lastOffGain = gv;
+                mpIn.setState (! on ? 1 : (gv < -0.001f ? 2 : 0), false);
+            }
 
             const int shelf = mpHighPair ? (int) Fusion::BandType::HighShelf
                                          : (int) Fusion::BandType::LowShelf;

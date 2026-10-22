@@ -90,6 +90,7 @@ void FusionEQAudioProcessor::captureModeState (int m)
         st.freq[b] = apvts.getRawParameterValue (IDs::bFreq (b))->load();
         st.gain[b] = apvts.getRawParameterValue (IDs::bGain (b))->load();
         st.q[b]    = apvts.getRawParameterValue (IDs::bQ    (b))->load();
+        st.slope[b] = apvts.getRawParameterValue (IDs::bSlope (b))->load();
         st.on[b]   = apvts.getRawParameterValue (IDs::bOn   (b))->load() > 0.5f;
     }
 
@@ -122,6 +123,7 @@ void FusionEQAudioProcessor::restoreModeState (int m)
         setF (IDs::bFreq (b), st.freq[b]);
         setF (IDs::bGain (b), st.gain[b]);
         setF (IDs::bQ    (b), st.q[b]);
+        setF (IDs::bSlope (b), st.slope[b]);
         setF (IDs::bOn   (b), st.on[b] ? 1.0f : 0.0f);
     }
 
@@ -189,6 +191,11 @@ FusionEQAudioProcessor::createParameterLayout()
 
         layout.add (std::make_unique<juce::AudioParameterBool> (
             IDs::bOn (i), n + "On", false));
+
+        /* 低切 / 高切段斜率：离散档位 6~192 dB/oct（滚轮逐档，末档 BRICKWALL） */
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            IDs::bSlope (i), n + "Slope",
+            juce::NormalisableRange<float> (6.0f, 192.0f, 0.0f, 0.05f), 6.0f));
 
         /* 动态压缩（F6 式每段动态 EQ，仅干净模式接入信号链）：
            阈值 / 作用范围 / 启动 / 释放；默认关闭 */
@@ -267,6 +274,16 @@ void FusionEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
             f.prepare (pspec);
             f.reset();
         }
+
+        for (auto& row : b.slopeFilters)
+            for (auto& f : row)
+            {
+                f.prepare (pspec);
+                f.reset();
+            }
+
+        for (auto& op : b.slopeFirst)
+            op.reset();
 
         for (auto& f : b.detFilters)
         {
@@ -350,7 +367,12 @@ void FusionEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     updateTiltCoefficients();
 
     for (int i = 0; i < Fusion::numBands; ++i)
+    {
+        /* 斜率先从参数取，再建系数（updateBandCoefficients 会按它算节数） */
+        bands[(size_t) i].slopeDb = juce::jlimit (
+            6.0f, 192.0f, apvts.getRawParameterValue (IDs::bSlope (i))->load());
         updateBandCoefficients (i);
+    }
 
     updateResponseSnapshot();
 
@@ -364,8 +386,12 @@ void FusionEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     for (auto& gc : dynGrCurve)
         gc.assign ((size_t) samplesPerBlock, 1.0f);
 
-    /* Look-ahead：10 ms 前视（混音用途，一切以音质为主） */
-    laSize = juce::jmax (1, (int) std::round (currentSampleRate * 0.010));
+    /* Look-ahead：10 ms 前视（混音用途，一切以音质为主）。
+       环形容量还必须能装下"整个处理块"：look-ahead 每块要推进 numSamples
+       个位置，容量不足时块内读写会互相覆盖，读出的是本块刚写进去的值，
+       延迟在块内从 laSize 一路塌缩到几十个采样 —— 表现为一开动态压缩
+       就出现的金属/电容式杂音（宿主缓冲大于 10 ms 时必然触发）。 */
+    laSize = juce::jmax (1, (int) std::round (currentSampleRate * 0.010), samplesPerBlock);
     laBuf.assign ((size_t) Fusion::numBands * 2u * (size_t) laSize, 0.0f);
     laPos = 0;
     spectrumBuf[0].fill (-100.0f);
@@ -424,6 +450,31 @@ static float hpfSectionQ (int stageIdx, int numStages) noexcept
 
     return bw[(size_t) juce::jlimit (0, 2, numStages - 1)]
              [(size_t) juce::jlimit (0, 2, stageIdx)];
+}
+
+/* Butterworth 梯形分节 Q（截止段斜率档位用；units = 斜率/6，即总阶数 N）。
+   偶数阶 2M（12/24/36…dB/oct）：
+       θ_k = (2k+1)·π / (2N)，k = 0..M-1，Q_k = 1/(2·cos θ_k)
+       —— 与原 16×16 硬编码表逐项一致（已数值核对）。
+   奇数阶 2M+1（6/18/30…dB/oct）：
+       M 个二阶级 + 1 个一阶节。二阶级取奇数阶的前 M 对共轭极点，
+       θ_k = (k+1)·π / N（自负实轴起算）；最后一个极点是实极点，
+       恰好落在截止频率上 → 由 OnePoleHP 一阶节承担。
+       例：18 dB/oct → Q = 1.0；30 dB/oct → Q = 0.618 / 1.618。
+   这样拼出的级联就是**精确的 N 阶 Butterworth**：
+       · -3 dB 点严格落在截止频率上（不需要任何 fc 补偿）
+       · 截止点上方严格归平（16 kHz 处误差 < 0.001 dB）
+   旧实现奇数档错借了偶数阶的梯形 Q（18 档首节用了 0.5176 而非 1.0），
+   只能靠把各级截止下压 0.82~0.86 倍去凑 -3 dB 点 —— 结果 18/30 档在
+   100~500 Hz 留下 -0.3~-0.6 dB 的凹陷，就是用户看到的"频率往下掉"。
+   BRICKWALL(192 dB/oct) = 32 阶：16 个二阶级，θ_0 = π/64 → Q=0.5006。 */
+static float cutSlopeQ (int units, int sectionIdx) noexcept
+{
+    const int n = juce::jlimit (1, 32, units);
+    const double theta = (n % 2 == 0)
+        ? (2.0 * sectionIdx + 1.0) * juce::MathConstants<double>::pi / (2.0 * n)
+        : (sectionIdx + 1.0) * juce::MathConstants<double>::pi / n;
+    return (float) (1.0 / (2.0 * std::cos (theta)));
 }
 
 /* 模式肩部性格 → 独立二阶节（叠加在 Butterworth 级联之后）：
@@ -603,9 +654,55 @@ void FusionEQAudioProcessor::updateBandCoefficients (int bandIndex)
     auto& b = bands[(size_t) bandIndex];
     const auto sr = currentSampleRate;
     const auto f  = juce::jlimit (Fusion::fMin, Fusion::fMax, b.freq.getTargetValue());
-    const auto q  = effectiveQ (b);
+    const auto qUser = effectiveQ (b);
     const auto g  = b.on ? b.gain.getTargetValue() : 0.0f;
     const auto gl = juce::Decibels::decibelsToGain (g);
+
+    /* --- 低切 / 高切：先把斜率分节算出来，它决定主节用哪个 Q ---
+       关键：纯 Butterworth 要求所有节都来自**同一行梯形**。若第 0 节直接用
+       用户的 Q（默认 0.707），而其余节取梯形值（1.3066 / 1.9319 / 5.10…），
+       级联就不再平直 —— 截止点上方会鼓出 +4~+6 dB 的包（实测 24 dB/oct
+       +4.66 dB，正是用户看到的"低频隆起"）。
+       所以把用户 Q 解释为"相对平直值的比例"：
+           qMain = 梯形首节 × (用户Q / 0.7071)
+       默认 Q=0.7071 → 比例 1 → 每档都精确平直；用户往上拉才故意出共振。 */
+    const bool isCut = b.type == (int) Fusion::BandType::LowCut
+                    || b.type == (int) Fusion::BandType::HighCut;
+
+    int  sec2 = 0;
+    bool has1 = false;
+    int  units = 2;      // 截止段总阶数 N = 斜率/6（非截止段占位不用）
+    float fc   = f;      // 精确 N 阶 Butterworth：-3 dB 点即截止频率，无需补偿
+
+    if (isCut)
+    {
+        units = juce::jlimit (1, 32,
+                        (int) std::round (juce::jlimit (6.0f, 192.0f, b.slopeDb) / 6.0f));
+
+        sec2 = units / 2;          // 二阶级数（含主节）
+        has1 = (units % 2) != 0;   // 还差一个 6 dB/oct 的一阶节
+    }
+
+    /* 档位 / 类型变化：清掉斜率各级（含一阶节）的历史状态。
+       一阶节在关闭期间一直保留旧状态，下次启用时用陈旧状态起步 = 爆音；
+       刚启用的二阶级同理（带着上一档的残留状态）。 */
+    if (b.slopeBuiltSec2 != sec2 || b.slopeBuiltHas1st != has1
+         || b.slopeBuiltType != b.type)
+    {
+        for (auto& row : b.slopeFilters)
+            for (auto& ff : row)
+                ff.reset();
+
+        for (auto& op : b.slopeFirst)
+            op.reset();
+
+        b.slopeBuiltSec2   = sec2;
+        b.slopeBuiltHas1st = has1;
+        b.slopeBuiltType   = b.type;
+    }
+
+    const auto q = (isCut && sec2 > 0) ? cutSlopeQ (units, 0) * (qUser / 0.7071f)
+                                       : qUser;
 
     Coeffs::Ptr c;
 
@@ -615,8 +712,8 @@ void FusionEQAudioProcessor::updateBandCoefficients (int bandIndex)
         case Fusion::BandType::HighShelf: c = Coeffs::makeHighShelf   (sr, f, q, gl); break;
         case Fusion::BandType::Notch:     c = Coeffs::makeNotch      (sr, f, q);      break;
         case Fusion::BandType::BandPass:  c = makeUnitBandPass       (sr, f, q);      break;
-        case Fusion::BandType::LowCut:    c = Coeffs::makeHighPass   (sr, f, q);      break;
-        case Fusion::BandType::HighCut:   c = Coeffs::makeLowPass    (sr, f, q);      break;
+        case Fusion::BandType::LowCut:    c = Coeffs::makeHighPass   (sr, fc, q);     break;
+        case Fusion::BandType::HighCut:   c = Coeffs::makeLowPass    (sr, fc, q);     break;
         case Fusion::BandType::TiltShelf: c = makeTiltShelf          (sr, f, g);      break;
         case Fusion::BandType::AllPass:   c = Coeffs::makeAllPass    (sr, f, q);      break;
         case Fusion::BandType::Bell:
@@ -631,6 +728,63 @@ void FusionEQAudioProcessor::updateBandCoefficients (int bandIndex)
     /* 动态压缩检测支路（干净模式）：同一组系数的独立实例 */
     for (auto& f : b.detFilters)
         f.coefficients = c;
+
+    /* --- 低切 / 高切段斜率：离散档位（见 Defs.h cutSlopeSteps）---
+       附加二阶节用 Butterworth 梯形 Q（cutSlopeQ(units, s)）；6 的奇数档
+       再补一个一阶节（6 dB/oct，承担奇数阶的实极点）。
+       所有节截止频率一致（fc = 频点）：拼出来即精确 N 阶 Butterworth。
+       6 dB/oct 档没有二阶节 —— 主节系数置恒等旁通，只留一阶节。
+       （主节 Q 已在上面按"梯形首节 × 用户比例"算好。） */
+    b.slopeSec2   = sec2;
+    b.slopeHas1st = has1;
+
+    if (isCut)
+    {
+        const bool isHp = (b.type == (int) Fusion::BandType::LowCut);
+
+        if (b.slopeSec2 == 0)
+        {
+            /* 只有一阶节：主节置恒等（b0=1, a0=1, 其余 0）＝ 旁通 */
+            Coeffs::Ptr ident (new Coeffs (1.0f, 0.0f, 0.0f,
+                                           1.0f, 0.0f, 0.0f));
+            bandCoeffs[(size_t) bandIndex] = ident;
+
+            for (auto& ff : b.filters)       ff.coefficients = ident;
+            for (auto& ff : b.detFilters)    ff.coefficients = ident;
+        }
+
+        for (int s = 1; s < b.slopeSec2; ++s)
+        {
+            auto cs = isHp ? Coeffs::makeHighPass (sr, fc, cutSlopeQ (units, s))
+                           : Coeffs::makeLowPass  (sr, fc, cutSlopeQ (units, s));
+
+            for (auto& ff : b.slopeFilters[(size_t) (s - 1)])
+                ff.coefficients = cs;
+        }
+
+        if (b.slopeHas1st)
+            for (auto& op : b.slopeFirst)
+                op.setCutoff ((double) fc, sr);
+    }
+}
+
+/* 主节之后接着跑该段的斜率附加节（附加二阶节 + 可选的一阶节）。
+   6 dB/oct 档主节是恒等旁通，实际只经这一阶。 */
+void FusionEQAudioProcessor::runBandSlope (int bandIndex, int ch,
+                                           float* data, int numSamples) noexcept
+{
+    auto& b = bands[(size_t) bandIndex];
+
+    for (int s = 1; s < b.slopeSec2; ++s)
+        runFilter (b.slopeFilters[(size_t) (s - 1)][(size_t) ch], data, numSamples);
+
+    if (b.slopeHas1st)
+    {
+        auto& op = b.slopeFirst[(size_t) ch];
+
+        for (int i = 0; i < numSamples; ++i)
+            data[i] = op.processSample (data[i]);
+    }
 }
 
 void FusionEQAudioProcessor::updateTiltCoefficients()
@@ -830,6 +984,14 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         const auto newFreq = apvts.getRawParameterValue (IDs::bFreq (i))->load();
         const auto newGain = apvts.getRawParameterValue (IDs::bGain (i))->load();
         auto newQ          = apvts.getRawParameterValue (IDs::bQ    (i))->load();
+        const auto newSlope = juce::jlimit (6.0f, 192.0f,
+                                            apvts.getRawParameterValue (IDs::bSlope (i))->load());
+
+        if (std::abs (b.slopeDb - newSlope) > 1.0e-3f)
+        {
+            b.slopeDb = newSlope;
+            b.dirty   = true;
+        }
 
         /* NEVE 1073：Q 由硬件电路固定，不开放 —— LOW/HIGH 谢尔夫 0.707、MID 钟形 0.70。
            只覆盖音频链使用的 Q，参数本身不动（其它模式的 Q 值不受影响）。 */
@@ -885,7 +1047,13 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
             b.dynRng = apvts.getRawParameterValue (IDs::bDynRng (i))->load();
             b.dynAtt = apvts.getRawParameterValue (IDs::bDynAtt (i))->load();
             b.dynRel = apvts.getRawParameterValue (IDs::bDynRel (i))->load();
-            b.chan   = (int) apvts.getRawParameterValue (IDs::bChan (i))->load();
+            /* Mono 轨（主输入 < 2 声道）没有立体声拓扑：
+               Left / Right / Mid / Side 全部降级成 Stereo 处理。
+               这里统一降级，下游主链路由 / 检测 / delta 三条路径就天然一致，
+               不会出现在 Mono 上把 Side 段算成静音、或两处算重导致杂音的情况。 */
+            b.chan   = (numChannels >= 2)
+                     ? (int) apvts.getRawParameterValue (IDs::bChan (i))->load()
+                     : 0;
         }
         else
         {
@@ -897,10 +1065,25 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     if (anyDirty)
         responsePending.store (true);
 
+    /* 频响重算很贵（砖墙档 16 节 = 16 次系数堆分配 + 16×curvePoints 幅频）。
+       滚轮连滚时每块都做 → 音频线程过载（爆音）且抢锁把 UI 也卡住（一卡一卡）。
+       这里给音频线程限频到 ~16 Hz，其余交给 UI 线程的 refreshCurveFromUI()
+       （频谱屏本来就在跑），显示完全跟手，音频线程也不再被拖垮。 */
     if (responsePending.exchange (false))
     {
-        if (! tryUpdateResponseSnapshot())       // 锁被 UI 持有：下个块再试
-            responsePending.store (true);
+        const auto now = juce::Time::getMillisecondCounter();
+
+        if (now - lastSnapshotMs >= 60)
+        {
+            if (tryUpdateResponseSnapshot())
+                lastSnapshotMs = now;
+            else
+                responsePending.store (true);
+        }
+        else
+        {
+            responsePending.store (true);   // 还没到点，下个块再试
+        }
     }
 
     /* ---------- 频点监听（SOLO LISTEN）系数 ----------
@@ -1017,6 +1200,15 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
        这一分配原先误放在 if(anyDynOn) 内，导致"无动态段、仅设 Mid/Side"时崩宿主。 */
     if (cleanDyn && anyParallel)
     {
+        /* 兜底：宿主偶尔给出超过 prepare 声明的块长（某些宿主/渲染离线），
+           环形装不下会导致块内自覆盖 —— 此时就地扩容，宁可多占内存也不能出杂音 */
+        if (numSamples > laSize)
+        {
+            laSize = numSamples;
+            laBuf.assign ((size_t) Fusion::numBands * 2u * (size_t) laSize, 0.0f);
+            laPos = 0;
+        }
+
         if ((int) grOneCurve.size() < numSamples)
             grOneCurve.assign ((size_t) numSamples, 1.0f);
 
@@ -1110,6 +1302,7 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
 
                 juce::FloatVectorOperations::copy (work, data, numSamples);
                 runFilter (b.filters[(size_t) ch], work, numSamples);
+                runBandSlope (bi - 1, ch, work, numSamples);   // bi 已自增，回退到本段索引
 
                 for (int i = 0; i < numSamples; ++i)
                     sum[i] += work[i] - data[i];
@@ -1129,6 +1322,7 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
                    其余静态段原样串联 */
                 if (act && ! (cleanDyn && (b.dynOn || b.chan != 0)))
                     runFilter (b.filters[(size_t) ch], data, numSamples);
+                    runBandSlope (bi - 1, ch, data, numSamples);
             }
         }
 
@@ -1182,6 +1376,7 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
                     {
                         juce::FloatVectorOperations::copy (work, dry, numSamples);
                         runFilter (b.filters[(size_t) ch], work, numSamples);
+                        runBandSlope (bi, ch, work, numSamples);
 
                         for (int n = 0; n < numSamples; ++n)
                         {
@@ -1220,6 +1415,7 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
                                 + (1.0f - sg) * 0.5f * (dryL[n] - dryR[n]);
 
                     runFilter (b.filters[0], work, numSamples);
+                    runBandSlope ((int) bi, 0, work, numSamples);
 
                     auto* lateR = dynLate[numChannels > 1 ? 1 : 0].data();
                     auto* ring0 = laBuf.data() + ((size_t) bi * 2u) * (size_t) laSize;
@@ -1250,7 +1446,13 @@ void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
             }
 
             if (ch == numChannels - 1)
-                laPos = pos0;
+            {
+                /* 环形位置必须每块推进 numSamples ——
+                   原先这里写的是 laPos = pos0（起点从不变动），读到的就只是
+                   "上一块同一位置"的值，而不是 10 ms 之前的采样，
+                   延迟会在块内线性塌缩，听感就是明显的杂味电流声。 */
+                laPos = (pos0 + numSamples) % laSize;
+            }
         }
 
         /* --- Pultec 三段（温润模式专属）：low boost+atten → high boost+atten --- */
@@ -1496,6 +1698,7 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
 
     auto& freqs = respFreqs;
     auto& tmp   = respTmp;
+    auto& tmp2  = respTmp2;
     auto& mag   = respMag;
 
     for (int i = 0; i < curvePoints; ++i)
@@ -1644,6 +1847,29 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
         const auto f  = juce::jlimit (Fusion::fMin, Fusion::fMax, fv);
         const auto gl = juce::Decibels::decibelsToGain (on ? gv : 0.0f);
 
+        /* 与 updateBandCoefficients 同一套逻辑：低切/高切的主节 Q = 梯形首节 ×
+           用户比例（默认比例 1 → 平直），分节数也在这里算出来给后面用 */
+        const bool isCut = type == (int) Fusion::BandType::LowCut
+                        || type == (int) Fusion::BandType::HighCut;
+
+        int  sec2 = 0;
+        bool has1 = false;
+        int  units = 2;
+        float fc   = f;      // 精确 N 阶 Butterworth：-3 dB 点即截止频率，无需补偿
+
+        if (isCut && on)
+        {
+            units = juce::jlimit (1, 32,
+                            (int) std::round (juce::jlimit (6.0f, 192.0f,
+                                            bands[(size_t) b].slopeDb) / 6.0f));
+
+            sec2 = units / 2;
+            has1 = (units % 2) != 0;
+        }
+
+        const auto qMain = (isCut && sec2 > 0) ? cutSlopeQ (units, 0) * (q / 0.7071f)
+                                               : q;
+
         Coeffs::Ptr c;
 
         switch ((Fusion::BandType) type)
@@ -1652,8 +1878,8 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
             case Fusion::BandType::HighShelf: c = Coeffs::makeHighShelf  (sr, f, q, gl); break;
             case Fusion::BandType::Notch:     c = Coeffs::makeNotch      (sr, f, q);      break;
             case Fusion::BandType::BandPass:  c = makeUnitBandPass       (sr, f, q);      break;
-            case Fusion::BandType::LowCut:    c = Coeffs::makeHighPass   (sr, f, q);      break;
-            case Fusion::BandType::HighCut:   c = Coeffs::makeLowPass    (sr, f, q);      break;
+            case Fusion::BandType::LowCut:    c = Coeffs::makeHighPass   (sr, fc, qMain); break;
+            case Fusion::BandType::HighCut:   c = Coeffs::makeLowPass    (sr, fc, qMain); break;
             case Fusion::BandType::TiltShelf: c = makeTiltShelf          (sr, f, gv);     break;
             case Fusion::BandType::AllPass:   c = Coeffs::makeAllPass    (sr, f, q);      break;
             case Fusion::BandType::Bell:
@@ -1669,6 +1895,43 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
 
         c->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                           (size_t) curvePoints, sr);
+
+        /* 低切 / 高切段：把斜率各节一起算进频响（与音频链 runBandSlope 同构），
+           否则滚轮改了斜率、画出来的曲线却不变，所见非所听。
+           附加二阶节用 Butterworth 梯形 Q（cutSlopeQ(units, s)）；奇数档再乘
+           一个一阶节（承担奇数阶的实极点）。所有节同一截止 fc。
+           （sec2 / has1 / qMain 已在上面算好。） */
+        if (sec2 == 0 && has1)
+        {
+            /* 6 dB/oct：只有一阶节，主节是恒等旁通 → 直接算一阶的幅度 */
+            auto onePole = Fusion::OnePoleHP();
+            onePole.setCutoff ((double) fc, sr);
+
+            for (int i = 0; i < curvePoints; ++i)
+                tmp[(size_t) i] = onePole.getMagnitudeForFrequency (freqs[(size_t) i], sr);
+        }
+        else
+        {
+            for (int s = 1; s < sec2; ++s)
+            {
+                auto cs = (type == (int) Fusion::BandType::LowCut)
+                              ? Coeffs::makeHighPass (sr, fc, cutSlopeQ (units, s))
+                              : Coeffs::makeLowPass  (sr, fc, cutSlopeQ (units, s));
+                cs->getMagnitudeForFrequencyArray (freqs.data(), tmp2.data(),
+                                                    (size_t) curvePoints, sr);
+                for (int i = 0; i < curvePoints; ++i)
+                    tmp[(size_t) i] *= tmp2[(size_t) i];
+            }
+
+            if (has1)
+            {
+                Fusion::OnePoleHP onePole;
+                onePole.setCutoff ((double) fc, sr);
+
+                for (int i = 0; i < curvePoints; ++i)
+                    tmp[(size_t) i] *= onePole.getMagnitudeForFrequency (freqs[(size_t) i], sr);
+            }
+        }
 
         for (int i = 0; i < curvePoints; ++i)
         {
@@ -1758,6 +2021,7 @@ bool FusionEQAudioProcessor::tryUpdateResponseSnapshot()
         return false;
 
     updateResponseSnapshot();
+    lastSnapshotMs = juce::Time::getMillisecondCounter();
     curveWriteBusy.store (false, std::memory_order_release);
     return true;
 }
@@ -1893,6 +2157,14 @@ int FusionEQAudioProcessor::getBandType (int i) const noexcept
         return 1;
 
     return bands[(size_t) i].type;
+}
+
+float FusionEQAudioProcessor::getBandSlope (int i) const noexcept
+{
+    if (! juce::isPositiveAndBelow (i, Fusion::numBands))
+        return 12.0f;
+
+    return bands[(size_t) i].slopeDb;
 }
 
 /* ============================ 编辑器 ============================ */

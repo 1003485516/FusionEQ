@@ -3,32 +3,66 @@
    ============================================================================= */
 #pragma once
 #include <JuceHeader.h>
+
+/* 平台相关字体名。
+   Windows：真实存在 Segoe UI / 微软雅黑，中文靠微软雅黑（DirectWrite 不自动回退）。
+   macOS：系统默认字体（SF）原生支持 CJK，自动回退到苹方，直接用即可；
+          但 Segoe UI* 在 macOS 不存在，必须换成真实字体，否则字标/副标题度量错乱。
+   Linux 等其它平台回退到通用 Sans-Serif。 */
+#if JUCE_WINDOWS
+  #define FUSION_LOGO_FONT "Segoe UI Light"
+  #define FUSION_UI_FONT   "Segoe UI"
+#elif JUCE_MAC
+  #define FUSION_LOGO_FONT "Helvetica Neue"
+  #define FUSION_UI_FONT   "Helvetica Neue"
+#else
+  #define FUSION_LOGO_FONT "Sans-Serif"
+  #define FUSION_UI_FONT   "Sans-Serif"
+#endif
+
 #include "PluginProcessor.h"
 #include "FusionKnob.h"
 #include "SpectrumDisplay.h"
 #include "Strips.h"
 
 /* ---------------------------------------------------------------------------
-   全局字体：Windows 默认的 Segoe UI 没有 CJK 字形，DirectWrite 渲染不会自动
-   回退到别的字体，中文会整段消失。把默认字体统一解析到微软雅黑（拉丁字形
-   也齐全），装到 LookAndFeel::setDefaultLookAndFeel 上全局生效。
+   全局字体解析：
+   · Windows：Segoe UI 缺 CJK 字形，DirectWrite 不会自动回退，中文会整段消失，
+             故把默认无衬线 / Segoe 系列统一解析到微软雅黑（拉丁 + 中文齐全）。
+   · macOS ：系统默认字体（SF）原生支持 CJK（自动回退到苹方），无需解析；
+             但 Segoe UI* 在 macOS 不存在，若不做替换会被换成度量不符的回退
+             字体，导致字标（FUSION EQ）与副标题重叠。这里仅把这类 Windows
+             专用名字换成真实存在的 Helvetica Neue。
+   改动以平台宏隔离，Windows 行为与原版完全一致，不影响已发布的 1.0.2。
 --------------------------------------------------------------------------- */
 class FusionLook : public juce::LookAndFeel_V4
 {
 public:
     juce::Typeface::Ptr getTypefaceForFont (const juce::Font& f) override
     {
-        static const juce::String cjkName ("Microsoft YaHei");
+        const juce::String name = f.getTypefaceName();
 
-        if (f.getTypefaceName() == juce::Font::getDefaultSansSerifFontName()
-            || f.getTypefaceName() == "Segoe UI"
-            || f.getTypefaceName() == "Segoe UI Variable")
+#if JUCE_WINDOWS
+        if (name == juce::Font::getDefaultSansSerifFontName()
+            || name == "Segoe UI" || name == "Segoe UI Light"
+            || name == "Segoe UI Variable" || name == "Segoe UI Semibold")
         {
             auto f2 (f);
-            f2.setTypefaceName (cjkName);
+            f2.setTypefaceName ("Microsoft YaHei");
             return juce::Font::getDefaultTypefaceForFont (f2);
         }
-
+#else
+        /* macOS / 其它：仅替换 Windows 专用的 Segoe UI* / 微软雅黑 名字，
+           默认无衬线字体保持系统原生（SF），中文走系统 CJK 回退，正常显示。 */
+        if (name == "Segoe UI" || name == "Segoe UI Light"
+            || name == "Segoe UI Variable" || name == "Segoe UI Semibold"
+            || name == "Microsoft YaHei")
+        {
+            auto f2 (f);
+            f2.setTypefaceName ("Helvetica Neue");
+            return juce::Font::getDefaultTypefaceForFont (f2);
+        }
+#endif
         return juce::Font::getDefaultTypefaceForFont (f);
     }
 
@@ -141,6 +175,9 @@ public:
 
     void paintButton (juce::Graphics& g, bool over, bool down) override
     {
+        const bool en = isEnabled();
+        if (! en) { over = false; down = false; }        // 禁用：无悬停/按压反馈
+
         auto r = getLocalBounds().toFloat().reduced (5.0f, 6.0f);
 
         if (over || down)
@@ -166,8 +203,10 @@ public:
             p.lineTo (r.getRight() - 2.0f, cy - 3.5f);
         }
 
-        g.setColour (juce::Colour (dark ? (down ? 0xff8a949d : 0xffb4bdc5)
-                                        : (down ? 0xff39424c : 0xff5c666f)));
+        /* 禁用：整体淡化（仅在干净模式可用，其他模式置灰） */
+        g.setColour (en ? juce::Colour (dark ? (down ? 0xff8a949d : 0xffb4bdc5)
+                                             : (down ? 0xff39424c : 0xff5c666f))
+                        : juce::Colour (0x59a8b1ba));
         g.strokePath (p, juce::PathStrokeType (2.2f,
                                                juce::PathStrokeType::mitered,
                                                juce::PathStrokeType::rounded));
@@ -204,6 +243,8 @@ private:
     FusionLook fusionLook;              // 全局字体（含 CJK）解析
 
     /* --- 顶栏 --- */
+    juce::Image ohLogo;                 // OH Audio 徽标（深色顶栏版：橙 emblem + 奶白字标）
+    juce::Image ohLogoLight;            // 浅色顶栏版：字标改为深板岩灰，自然融入浅底
 
 
     struct ModeButton : public juce::TextButton
@@ -227,6 +268,12 @@ private:
     bool  scopeOpen = true;     // 目标状态
     float scopeAnim = 1.0f;     // 1 = 展开，0 = 收起（动画插值）
     int   scopeNowH = 360;      // 频谱当前显示高度（resized 更新，paint 使用）
+
+    /* 机架隐藏 = 频谱扩展（底栏箭头，仅「干净」模式可用；与顶栏收频谱互为反向） */
+    ChevronButton rackToggle;
+    bool  rackHidden = true;    // 目标状态：false = 机架显示（默认隐藏 → 开窗即大频谱）
+    float rackAnim   = 1.0f;    // 0 = 机架显示，1 = 机架完全隐藏（动画插值；默认直接隐藏，开窗不播动画）
+    bool  rackCompsHidden = false;  // 条带当前是否被强制隐藏（避免重复恢复）
 
     /* --- 机架 --- */
     Fusion::HpfStrip hpfStrip { processor.apvts };

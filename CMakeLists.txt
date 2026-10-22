@@ -1,9 +1,19 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FusionEQ VERSION 1.0.0)
+project(FusionEQ VERSION 1.0.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ---------------------------------------------------------------------------
+# MSVC 源码编码：源码是 UTF-8（含中文，且无 BOM）。MSVC 默认按系统代码页
+# （简体中文系统 = GBK 936）读源文件，中文被误读成乱码字节后会导致字符串/
+# 语法结构崩坏（一连串 C2065/C2059/C2440 等莫名报错）。
+# /utf-8 让 MSVC 按 UTF-8 读源码、按 UTF-8 生成执行字符集，与 MinGW 行为一致。
+# ---------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
 
 # ---------------------------------------------------------------------------
 # MinGW 构建：静态链接 C/C++ 运行时，让插件不依赖外部 DLL，
@@ -61,6 +71,35 @@ else()
     set(FUSION_FORMATS VST3 Standalone)
 endif()
 
+# ---------------------------------------------------------------------------
+# AAX（Pro Tools）可选支持
+#
+# AAX SDK 是 Avid 的专有授权软件，**不随本项目分发**，需自行到
+#   https://developer.avid.com  →  AAX Plug-in SDK
+# 注册（免费账号 + 接受协议）后下载。
+#
+# 拿到 SDK 后用以下任一方式构建即可自动产出 AAX：
+#   cmake -B build_aax -DAAX_SDK_PATH="E:/FusionEQ/sdk/AAX_SDK"
+#   或设置环境变量 AAX_SDK_PATH
+#   （推荐直接用 installer/build_aax.bat，它会自动用 MSVC 构建）
+#
+# 未配置 SDK 时不会报错，只是不产出 AAX（仍正常产出 VST3 / Standalone）。
+# ---------------------------------------------------------------------------
+set(AAX_SDK_PATH "" CACHE PATH "Avid AAX SDK 根目录（含 Interfaces/AAX.h）")
+if(NOT AAX_SDK_PATH AND DEFINED ENV{AAX_SDK_PATH})
+    set(AAX_SDK_PATH "$ENV{AAX_SDK_PATH}")
+endif()
+
+# 以 Interfaces/AAX.h 为 SDK 有效的标志（各版本 AAX SDK 均存在；老版另有 Interfaces/ACF）
+if(AAX_SDK_PATH AND EXISTS "${AAX_SDK_PATH}/Interfaces/AAX.h")
+    # 必须在 juce_add_plugin 之前调用
+    juce_set_aax_sdk_path("${AAX_SDK_PATH}")
+    list(APPEND FUSION_FORMATS AAX)
+    message(STATUS "AAX SDK: ${AAX_SDK_PATH}")
+elseif(AAX_SDK_PATH)
+    message(WARNING "AAX_SDK_PATH 已设置但无效（缺少 Interfaces/AAX.h）：${AAX_SDK_PATH}")
+endif()
+
 # 调试用：确认最终传给 juce_add_plugin 的格式列表
 message(STATUS "插件格式 FORMATS = ${FUSION_FORMATS}")
 
@@ -68,9 +107,9 @@ message(STATUS "插件格式 FORMATS = ${FUSION_FORMATS}")
 # 插件目标
 # ---------------------------------------------------------------------------
 juce_add_plugin(FusionEQ
-    COMPANY_NAME          "Fusion Audio"
-    BUNDLE_ID             "com.fusionaudio.fusioneq"
-    PLUGIN_MANUFACTURER_CODE  Fusn
+    COMPANY_NAME          "OH Audio"
+    BUNDLE_ID             "com.ohaudio.fusioneq"
+    PLUGIN_MANUFACTURER_CODE  OHAu
     PLUGIN_CODE            FuEQ
     FORMATS                ${FUSION_FORMATS}  # macOS=VST3+AU+Standalone；Windows=VST3+Standalone
     PRODUCT_NAME           "Fusion EQ"
@@ -81,6 +120,8 @@ juce_add_plugin(FusionEQ
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
     VST3_CATEGORIES        EQ
+    AAX_IDENTIFIER         "com.ohaudio.fusioneq"
+    AAX_CATEGORY           ePlugInCategory_EQ
     AU_MAIN_TYPE           kAudioUnitType_Effect
     AU_EXPORT_PREFIX       FusionEQAU
 )
@@ -135,6 +176,8 @@ juce_add_binary_data(FusionEQData SOURCES
     Resources/btn_ssl_curve_off.png
     Resources/btn_ssl_curve_on.png
     Resources/panel_eqp.png
+    Resources/oh_audio_logo.png
+    Resources/oh_audio_logo_light.png
 )
 
 target_sources(FusionEQ PRIVATE

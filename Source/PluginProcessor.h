@@ -84,6 +84,7 @@ public:
         float q[Fusion::numBands]    = {};
         bool  on[Fusion::numBands]   = {};
         int   type[Fusion::numBands] = {};
+        float slope[Fusion::numBands] = {};   // 低切/高切段：连续 12~36 dB/oct（默认 12）
 
         bool  hpfOn = false;
         bool  lpOn = false;      // 硬朗 215L：LO-PASS 独立开关
@@ -106,6 +107,8 @@ public:
     float getBandGain    (int i) const noexcept;
     float getBandQ       (int i) const noexcept;
     int   getBandType    (int i) const noexcept;
+    /* 低切/高切段斜率（dB/oct，连续 12~36）；其余类型返回 12 */
+    float getBandSlope  (int i) const noexcept;
 
     /* 动态压缩（干净模式）：开关 + 当前 GR（dB，负值；供悬浮窗显示） */
     bool  getBandDynOn (int i) const noexcept;
@@ -113,6 +116,11 @@ public:
 
     /* 每段声道模式（干净模式）：0=Stereo 1=Left 2=Right 3=Mid 4=Side */
     int   getBandChan  (int i) const noexcept;
+
+    /* 主输入总线声道数：UI 用它决定 Mid / Side 是否可选。
+       Mono 轨（<2 声道）上 Left/Right/Mid/Side 都没有物理意义，菜单里应禁用。 */
+    int   getMainInputChannels() const noexcept { return getMainBusNumInputChannels(); }
+    bool  isStereoInput()        const noexcept { return getMainBusNumInputChannels() >= 2; }
 
     /* 自动增益补偿当前值（dB，供 UI 显示） */
     float getAutoGainDb() const noexcept { return autoGainDb.load(); }
@@ -136,6 +144,23 @@ private:
         bool on   = true;
         bool dirty = true;
         std::array<juce::dsp::IIR::Filter<float>, 2> filters {};   // [ch]
+
+        /* --- 低切 / 高切段斜率（离散档位，见 Defs.h cutSlopeSteps）---
+           档位以二阶级（12 dB/oct）叠加；6 的奇数档再补一个一阶（6 dB/oct）。
+           第 0 节就是上面的 filters[ch]，Q = 用户设的共振值；
+           6 dB/oct 档主节系数置恒等（旁通），只留一阶节。
+           附加二阶节用 Butterworth 梯形 Q（见 cutSlopeQ）—— 叠到 16 节时，
+           若一律用 0.7071 会在截止点堆出巨大共振隆起。 */
+        std::array<std::array<juce::dsp::IIR::Filter<float>, 2>, 15> slopeFilters {};  // [节-1][ch]
+        std::array<Fusion::OnePoleHP, 2>                 slopeFirst {};  // [ch] 补的 6 dB/oct 一阶节
+        int   slopeSec2   = 0;      // 二阶级数（含主节）0..16
+        bool  slopeHas1st = false;  // 是否额外补一阶节
+        float slopeDb     = 6.0f;   // 当前档位（dB/oct）
+
+        /* 上次建系数时的形态：变了就清各级状态，避免陈旧状态起步的爆音 */
+        int   slopeBuiltSec2   = -1;
+        bool  slopeBuiltHas1st = false;
+        int   slopeBuiltType   = -1;
 
         /* --- 动态压缩（干净模式专属，F6 式）---
            检测支路用同一组系数的独立实例（不动主链状态），
@@ -294,9 +319,10 @@ private:
     std::array<float, curvePoints> curveFreqs {};
 
     /* 频响计算用的临时缓冲（成员化 = 音频线程不分配内存） */
-    std::array<double, curvePoints> respFreqs {}, respTmp {}, respMag {}, respAir {};
+    std::array<double, curvePoints> respFreqs {}, respTmp {}, respMag {}, respAir {}, respTmp2 {};
     std::array<CurveSnapshot, 2>   curveBuf   {};
     std::atomic<int>               curveIndex { 0 };
+    juce::int64                 lastSnapshotMs = 0;   // 音频线程频响重算限频（UI 线程另算）
 
     /* --- 快照发布协议 ---
        seqlock：curveSeq/specSeq 为奇数表示"正在写入"，读者拷贝前后各读一次，
@@ -324,6 +350,8 @@ private:
     void rebuildAir();
     void rebuildPultec();
     void updateBandCoefficients (int bandIndex);
+    /* 主节之后接着跑该段的斜率附加节（含尾部节的干湿交叉淡化） */
+    void runBandSlope (int bandIndex, int ch, float* data, int numSamples) noexcept;
     void updateTiltCoefficients();
     float effectiveQ (const BandState&) const noexcept;
 

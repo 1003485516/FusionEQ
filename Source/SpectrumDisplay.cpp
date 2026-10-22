@@ -105,6 +105,7 @@ juce::uint64 SpectrumDisplay::computeStateHash() const
         mix (q (raw (IDs::bFreq (i)),      100.0f));
         mix (q (raw (IDs::bGain (i)),      100.0f));
         mix (q (raw (IDs::bQ    (i)),      100.0f));
+        mix (q (raw (IDs::bSlope(i)),      100.0f));   // 低切/高切斜率 → 曲线要重画
         mix (q (raw (IDs::bChan (i)),       10.0f));   // 声道模式影响段颜色 → 触发曲线缓存重绘
     }
 
@@ -116,6 +117,17 @@ juce::uint64 SpectrumDisplay::computeStateHash() const
 
 void SpectrumDisplay::timerCallback()
 {
+    /* BYPASS 状态感知：面板 BYPASS 按钮 + 宿主的 bypass 参数任一置位都算。
+       切状态时由 setBypassed 负责切灰 / 恢复交互并清理进行中的手势。 */
+    {
+        bool b = processor.isBypassed();
+
+        if (auto* bp = processor.getBypassParameter())
+            b = b || bp->getValue() > 0.5f;
+
+        setBypassed (b);
+    }
+
     /* 每帧先把快照拷贝到本地（seqlock 防撕裂），绘制期间音频线程
        随时可能发布新快照，绝不能直接引用共享缓冲。
        读取失败只说明这一瞬快照正被写入 —— 沿用上一帧本地拷贝继续画，
@@ -194,7 +206,15 @@ void SpectrumDisplay::timerCallback()
         if (hb >= 0)
             hudShowBand = hb;                    // 淡出期间继续画这一段
 
-        if (hb < 0)
+        /* 鼠标正压在浮窗上（含 10px 缓冲）时**不淡出**并把不透明度补满。
+           原先只按 hudBand() 判定：鼠标一旦离开频点、浮窗立刻进入 0.5s
+           宽限并开始淡出（约 0.625s 后 alpha < 0.5），而从频点移到
+           右上角 × 通常就要 0.6s 左右 —— 结果就是"× 永远点不到"。 */
+        const auto  mp    = getMouseXYRelative().toFloat();
+        const bool  onHud = hudShowBand >= 0
+                            && hudRect (hudShowBand).expanded (10.0f).contains (mp);
+
+        if (hb < 0 && ! onHud)
         {
             hudIdleMs += (int) (dt * 1000.0f);
 
@@ -211,27 +231,8 @@ void SpectrumDisplay::timerCallback()
         }
         else
         {
-            const bool pinned = (processor.getListenBand() == hb)
-                             || activeBand == hb || hoverBand == hb;
-
-            const auto  mp     = getMouseXYRelative().toFloat();
-            const bool  onHud  = hudRect (hb).expanded (8.0f).contains (mp);
-            const bool  onNode = (bandAt (mp, 9.0f) == hb);
-
-            if (pinned || onHud || onNode)
-            {
-                hudIdleMs = 0;
-                hudAlpha  = juce::jmin (1.0f, hudAlpha + dt * 6.0f);
-            }
-            else
-            {
-                hudIdleMs += (int) (dt * 1000.0f);
-
-                if (hudIdleMs >= 500)
-                    hudAlpha = juce::jmax (0.0f, hudAlpha - dt * 4.0f);
-                else
-                    hudAlpha = juce::jmin (1.0f, hudAlpha + dt * 6.0f);
-            }
+            hudIdleMs = 0;
+            hudAlpha  = juce::jmin (1.0f, hudAlpha + dt * 6.0f);
         }
     }
 
@@ -375,7 +376,9 @@ void SpectrumDisplay::rebuildStaticLayer()
         std::memset (bd.data, 0, (size_t) bd.lineStride * (size_t) bd.height);
 
         juce::Graphics g (curveLayer);
-        g.reduceClipRegion (plot.expanded (3));
+        /* 底部内缩 6px：低切这类大幅衰减会把曲线钳位在 -18 dB 的画布底边，
+           沿底边拖出的那条水平线很难看 —— 连同它的描边阴影一起裁掉 */
+        g.reduceClipRegion (plot.expanded (3).withTrimmedBottom (6));
         drawCurves (g, plot);
     }
 
@@ -400,8 +403,22 @@ void SpectrumDisplay::paint (juce::Graphics& g)
 
     drawDynCurves (g, plot);
 
-    if (showNodes)
+    if (showNodes && ! bypassVisual)
         drawNodes (g, plot);
+
+    /* BYPASS：整块频谱压灰 + 居中提示。
+       画在最上层，把曲线/频谱/频点/浮窗一并盖住，直观表达"看得到但动不了"。 */
+    if (bypassVisual)
+    {
+        auto area = getLocalBounds();
+
+        g.setColour (juce::Colour (0x8c9aa3a6));        // 半透明中性灰
+        g.fillRect (area);
+
+        g.setColour (juce::Colours::white.withAlpha (0.9f));
+        g.setFont (juce::Font (juce::Font::getDefaultSansSerifFontName(), 15.0f, juce::Font::bold));
+        g.drawText ("BYPASSED", area, juce::Justification::centred);
+    }
 }
 
 void SpectrumDisplay::drawGrid (juce::Graphics& g, juce::Rectangle<int> plot)
@@ -420,7 +437,7 @@ void SpectrumDisplay::drawGrid (juce::Graphics& g, juce::Rectangle<int> plot)
         g.drawVerticalLine ((int) x, (float) plot.getY(), (float) plot.getBottom());
     }
 
-    g.setFont (juce::Font (8.5f));
+    g.setFont (juce::Font (12.0f));
 
     for (auto f : labelFreqs)
     {
@@ -443,14 +460,14 @@ void SpectrumDisplay::drawGrid (juce::Graphics& g, juce::Rectangle<int> plot)
 
         g.setColour (dark ? juce::Colour (zero ? 0xffe4e9ed : 0xffaeb8c0)
                           : juce::Colour (zero ? 0xff6b7885 : 0xff9aa4ae));
-        g.setFont (juce::Font (8.5f, zero ? juce::Font::bold : juce::Font::plain));
+        g.setFont (juce::Font (12.0f, zero ? juce::Font::bold : juce::Font::plain));
         g.drawText ((db > 0 ? "+" : "") + juce::String (db),
                     juce::Rectangle<float> (2.0f, y - 6.0f, (float) plot.getX() - 6.0f, 12.0f),
                     juce::Justification::centredRight);
     }
 
     g.setColour (dark ? juce::Colour (0xffb9c2ca) : juce::Colour (0xff9aa4ae));
-    g.setFont (juce::Font (8.0f));
+    g.setFont (juce::Font (11.5f));
     g.drawText ("dB", juce::Rectangle<float> (2.0f, (float) plot.getY() - 12.0f,
                                               (float) plot.getX() - 6.0f, 12.0f),
                 juce::Justification::centredRight);
@@ -870,8 +887,8 @@ juce::Rectangle<float> SpectrumDisplay::hudRect (int b) const
 
     /* 干净模式：DYN 行常显；四个压缩旋钮随 hudDynVis 淡入展开 */
     const bool clean = processor.getMode() == Fusion::Mode::Clean;
-    const float w = clean ? 216.0f : 158.0f;
-    const float h = clean ? 78.0f + 40.0f * hudDynVis : 58.0f;
+    const float w = clean ? 300.0f : 220.0f;          // 字号放大后加宽
+    const float h = clean ? 108.0f + 56.0f * hudDynVis : 80.0f;
     float bx = juce::jlimit (plotX + 4.0f, plotX + plotW - w - 4.0f, x - w * 0.5f);
 
     /* 上/下放置带滞回：上方放不下才落到下方；一旦在下方就粘住，
@@ -903,29 +920,27 @@ juce::Rectangle<float> SpectrumDisplay::hudRect (int b) const
 juce::Rectangle<float> SpectrumDisplay::hudHeadRect (int b) const
 {
     const auto r = hudRect (b);
-    return { r.getRight() - 38.0f, r.getY() + 6.0f, 26.0f, 26.0f };
-}
-
-juce::Rectangle<float> SpectrumDisplay::hudCloseRect (int b) const
-{
-    const auto r = hudRect (b);
-    return { r.getRight() - 22.0f, r.getY() + 4.0f, 17.0f, 15.0f };
+    /* 耳机按钮在 × 左侧，两者之间留出间隙 ——
+       原先耳机 [右-38, 右-12]、× [右-22, 右-5] 重叠了 10px，图标糊在一起 */
+    return { r.getRight() - 48.0f, r.getY() + 6.0f, 26.0f, 26.0f };
 }
 
 /* DYN 行（干净模式）：左上胶囊开关 + 实时 GR 读数 */
 juce::Rectangle<float> SpectrumDisplay::hudDynRect (int b) const
 {
     const auto r = hudRect (b);
-    return { r.getX() + 11.0f, r.getY() + 56.0f, 46.0f, 17.0f };
+    return { r.getX() + 15.0f, r.getY() + 53.0f, 66.0f, 24.0f };   // DYN 胶囊同步放大
 }
 
-/* 动态压缩小旋钮（干净模式）：k = 0 THR / 1 RNG / 2 ATT / 3 REL */
+/* 动态压缩小旋钮（干净模式）：k = 0 THR / 1 RNG / 2 ATT / 3 REL
+   旋钮整体上移（原 +74）：贴近读数行、远离浮窗底缘 —— 黄色虚线
+   常从浮窗下部穿过，太低会被误当成拖黄线 */
 juce::Rectangle<float> SpectrumDisplay::hudKnobRect (int b, int k) const
 {
     const auto r = hudRect (b);
     const float cellW = (r.getWidth() - 16.0f) / 4.0f;
     const float cx = r.getX() + 8.0f + cellW * ((float) k + 0.5f);
-    return { cx - 15.0f, r.getY() + 74.0f, 30.0f, 30.0f };
+    return { cx - 15.0f, r.getY() + 57.0f, 30.0f, 30.0f };
 }
 
 /* 动态压缩参数辅助：k = 0 THR / 1 RNG / 2 ATT / 3 REL */
@@ -967,7 +982,7 @@ static std::unique_ptr<juce::Drawable> makeChanIcon (int cm)
 
     /* 文字转路径（矢量图标，菜单缩放不失真） */
     juce::GlyphArrangement ga;
-    ga.addFittedText (juce::Font (9.0f, juce::Font::bold), modeTxt[juce::jlimit (0, 4, cm)],
+    ga.addFittedText (juce::Font (12.5f, juce::Font::bold), modeTxt[juce::jlimit (0, 4, cm)],
                       0.0f, 0.0f, 24.0f, 12.0f, juce::Justification::centred, 1);
 
     juce::Path p;
@@ -1022,10 +1037,8 @@ void SpectrumDisplay::drawHUD (juce::Graphics& g)
                 juce::AffineTransform::translation (hr.getCentreX() - 13.0f,
                                                     hr.getCentreY() - 8.0f));
 
-    /* × 关闭按钮（关掉监听并取消选中） */
-    g.setColour (juce::Colour (0xff8b969e).withAlpha (a));
-    g.setFont (juce::Font (12.0f, juce::Font::bold));
-    g.drawText ("x", hudCloseRect (b), juce::Justification::centred);
+    /* 不设关闭按钮：浮窗本就会在鼠标离开 0.5s 后自动淡出，
+       手动关闭既多余、又容易与耳机按钮误触 */
 
     /* 读数：频率 / 增益 / Q —— 拖动时实时刷新 */
     const auto textCol  = juce::Colours::white.withAlpha (a);
@@ -1033,18 +1046,28 @@ void SpectrumDisplay::drawHUD (juce::Graphics& g)
     const auto tx = juce::Rectangle<float> (r.getX() + 11.0f, 0.0f, 104.0f, 0.0f);
 
     g.setColour (textCol);
-    g.setFont (juce::Font (12.5f, juce::Font::bold));
+    g.setFont (juce::Font (17.5f, juce::Font::bold));
     g.drawText (Fusion::formatFreq (processor.getBandFreq (b)),
-                tx.withY (r.getY() + 6.0f).withHeight (15.0f),
+                tx.withY (r.getY() + 9.0f).withHeight (21.0f),
                 juce::Justification::centredLeft);
 
     g.setColour (labelCol);
-    g.setFont (juce::Font (10.5f));
-    g.drawText (Fusion::formatGain (processor.getBandGain (b)),
-                tx.withY (r.getY() + 23.0f).withHeight (13.0f),
-                juce::Justification::centredLeft);
-    g.drawText ("Q " + Fusion::formatQ (processor.getBandQ (b)),
-                tx.withY (r.getY() + 37.0f).withHeight (13.0f),
+    g.setFont (juce::Font (15.0f));
+    /* 增益与 Q 合并为一行（下方空间让给 DYN 行与压缩旋钮：整体上移、
+       远离从浮窗下部穿过的黄色虚线）。低切/高切段没有增益，改显共振峰电平。 */
+    const bool cut = isCutBand (b);
+    /* 低切/高切段：竖轴是共振（见 cutQToDispDb），按住滚轮改的是斜率，
+       所以这里把斜率显示出来（Q 在下方旋钮上已经能看到）。 */
+    const juce::String readout2 =
+        cut ? (juce::String ("RES ") + Fusion::formatGain (
+                   cutQToDispDb (processor.getBandQ (b)))
+                   + "  ·  " + Fusion::cutSlopeNames()[(size_t) Fusion::cutSlopeIndex (
+                                        processor.getBandSlope (b))])
+             : (Fusion::formatGain (processor.getBandGain (b))
+                + "  ·  Q " + Fusion::formatQ (processor.getBandQ (b)));
+
+    g.drawText (readout2,
+                tx.withY (r.getY() + 31.0f).withHeight (19.0f),
                 juce::Justification::centredLeft);
 
     /* DYN 行（干净模式）：胶囊开关 + 实时 GR + 四个压缩小旋钮 */
@@ -1057,14 +1080,14 @@ void SpectrumDisplay::drawHUD (juce::Graphics& g)
         g.setColour ((dyn ? juce::Colour (0xff2f9e6a) : juce::Colour (0xff333b43)).withAlpha (a));
         g.fillRoundedRectangle (dr, 6.0f);
         g.setColour (juce::Colours::white.withAlpha (a));
-        g.setFont (juce::Font (10.0f, juce::Font::bold));
+        g.setFont (juce::Font (14.0f, juce::Font::bold));
         g.drawText ("DYN", dr, juce::Justification::centred);
 
         /* 右侧读数：拖旋钮时显示该参数实时值，否则显示实时 GR */
         const auto readoutR = juce::Rectangle<float> (dr.getRight() + 8.0f, dr.getY(),
                                                       r.getRight() - dr.getRight() - 14.0f,
                                                       dr.getHeight());
-        g.setFont (juce::Font (10.5f));
+        g.setFont (juce::Font (15.0f));
 
         if (dynKnobDrag && dynKnobBand == b)
         {
@@ -1133,7 +1156,7 @@ void SpectrumDisplay::drawHUD (juce::Graphics& g)
 
                 /* 名称 */
                 g.setColour (juce::Colour (0xffaeb9c2).withAlpha (ka));
-                g.setFont (juce::Font (8.5f, juce::Font::bold));
+                g.setFont (juce::Font (12.0f, juce::Font::bold));
                 g.drawText (kn[k], juce::Rectangle<float> (kr.getX() - 10.0f, kr.getBottom() + 2.0f,
                                                            kr.getWidth() + 20.0f, 10.0f),
                             juce::Justification::centred);
@@ -1160,7 +1183,54 @@ float SpectrumDisplay::bandCurveDbAt (int b, float freq) const
     return c[(size_t) i0] * (1.0f - fr) + c[(size_t) i0 + 1] * fr;
 }
 
-/* 节点纵轴位置：低切/高切画在自身曲线上（共振峰随 Q 移动），
+/* ---- 低切 / 高切段：竖直方向不是增益而是共振 Q ----
+   二阶高通/低通在截止点附近的共振峰：L = Q / sqrt(1 - 1/(4Q²))
+   → db = 20·log10(L)（Q = 1/√2 正好 0 dB，Q 越大隆起越高）。
+   0 dB 以下（Q < 1/√2，曲线单调无隆起）线性映射到 Q 0.5，让整条竖轴都可用。
+   绘制与拖拽共用这对互为反函数的换算 → 节点严格跟手。 */
+float SpectrumDisplay::cutQToDispDb (float q) noexcept
+{
+    if (q <= 0.70711f)
+        return juce::jlimit (-18.0f, 0.0f,
+                             (q - 0.5f) / (0.70711f - 0.5f) * 18.0f - 18.0f);
+
+    const double q2 = (double) q * (double) q;
+    const double L  = (double) q / std::sqrt (juce::jmax (1e-9, 1.0 - 1.0 / (4.0 * q2)));
+    return (float) (20.0 * std::log10 (L));
+}
+
+float SpectrumDisplay::cutDispDbToQ (float db) noexcept
+{
+    if (db <= 0.0f)
+        return juce::jlimit (0.5f, 0.70711f,
+                             0.5f + (db + 18.0f) / 18.0f * (0.70711f - 0.5f));
+
+    /* L = Q / sqrt(1 - 1/(4Q²)) 反解：4x² - 4L²x + L² = 0（x = Q²），取大根 */
+    const double L  = std::pow (10.0, (double) db / 20.0);
+    const double L2 = L * L;
+    const double x  = (L2 + L * std::sqrt (juce::jmax (0.0, L2 - 1.0))) / 2.0;
+    return (float) std::sqrt (juce::jmax (0.0, x));
+}
+
+bool SpectrumDisplay::isCutBand (int b) const
+{
+    const auto t = (Fusion::BandType) processor.getBandType (b);
+    return t == Fusion::BandType::LowCut || t == Fusion::BandType::HighCut;
+}
+
+/* 光标纵向位置 → 共振 Q：直接取该 dB 对应的 Q（与绘制同一函数，节点 1:1 跟手） */
+void SpectrumDisplay::dragBandQFromY (int b, float yPos)
+{
+    if (auto* pq = dragQ != nullptr ? dragQ
+                                     : processor.apvts.getParameter (IDs::bQ (b)))
+    {
+        const float q = juce::jlimit (Fusion::qMin, Fusion::qMax,
+                                      cutDispDbToQ (gainOfY (yPos)));
+        pq->setValueNotifyingHost (pq->getNormalisableRange().convertTo0to1 (q));
+    }
+}
+
+/* 节点纵轴位置：低切/高切 = 共振 Q 的竖轴表示（随 Q 上下移动），
    其它类型画在增益参数的位置 */
 float SpectrumDisplay::nodeYOf (int b) const
 {
@@ -1172,7 +1242,7 @@ float SpectrumDisplay::nodeYOf (int b) const
         const auto t = (Fusion::BandType) processor.getBandType (b);
 
         if (t == Fusion::BandType::LowCut || t == Fusion::BandType::HighCut)
-            return yOfEq (juce::jlimit (-24.0f, 24.0f, bandCurveDbAt (b, f)));
+            return yOfEq (cutQToDispDb (processor.getBandQ (b)));
     }
 
     return yOfEq (on ? processor.getBandGain (b) : 0.0f);
@@ -1214,9 +1284,11 @@ void SpectrumDisplay::beginEdit (int band)
 
     dragFreq = freqParam (band);
     dragGain = gainParam (band);
+    dragQ    = processor.apvts.getParameter (IDs::bQ (band));
 
     if (dragFreq != nullptr) dragFreq->beginChangeGesture();
     if (dragGain != nullptr) dragGain->beginChangeGesture();
+    if (dragQ    != nullptr) dragQ->beginChangeGesture();
     gestureActive = true;
 }
 
@@ -1227,15 +1299,20 @@ void SpectrumDisplay::endEdit()
 
     if (dragFreq != nullptr) dragFreq->endChangeGesture();
     if (dragGain != nullptr) dragGain->endChangeGesture();
+    if (dragQ    != nullptr) dragQ->endChangeGesture();
 
     dragFreq = nullptr;
     dragGain = nullptr;
+    dragQ    = nullptr;
     gestureActive = false;
 }
 
 /* ============================ 鼠标交互 ============================ */
 void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
 {
+    if (bypassVisual)          // BYPASS：频谱只读，任何点击/拖拽都不生效
+        return;
+
     const auto pos = e.position;
     const bool  inside = (pos.x >= plotX && pos.x <= plotX + plotW
                        && pos.y >= plotY && pos.y <= plotY + plotH);
@@ -1245,13 +1322,19 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
 
     /* 压缩作用区虚线（整条线 + 尖端）：按住垂直拖动 = RANGE（Pro-Q 式）。
        虚线好抓（12px 缓冲）；但正压在频点核心（8px）时仍优先抓频点，
-       避免虚线和节点重合时抢走拖频点的手势 */
+       避免虚线和节点重合时抢走拖频点的手势。
+       悬浮框区域内一律不抓黄线 —— 黄虚线常从浮窗下部（旋钮行）穿过，
+       否则点旋钮会被抢成拖黄线；浮窗内的命中全部让给浮窗控件 */
     if (e.mods.isLeftButtonDown() && ! e.mods.isAltDown()
         && processor.getMode() == Fusion::Mode::Clean)
     {
         const int zb = dynZoneBandAt (pos);
 
-        if (zb >= 0 && bandAt (pos, 8.0f) < 0)
+        const int hbNow = hudBand();
+        const bool overHud = hbNow >= 0 && hudAlpha > 0.5f
+                             && hudRect (hbNow).contains (pos);
+
+        if (zb >= 0 && bandAt (pos, 8.0f) < 0 && ! overHud)
         {
             rngTipBand  = zb;
             rngTipParam = processor.apvts.getParameter (IDs::bDynRng (zb));
@@ -1292,17 +1375,6 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
                 holdStartGain  = processor.getBandGain (hb);
 
                 beginEdit (hb);
-                repaint();
-                return;
-            }
-
-            if (hudCloseRect (hb).contains (pos))
-            {
-                if (processor.getListenBand() == hb)
-                    processor.setListenBand (-1);
-
-                selectedBand = -1;
-                hoverBand    = -1;
                 repaint();
                 return;
             }
@@ -1424,12 +1496,15 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
                 static const juce::Colour chanCols [5] = { juce::Colour (0xffffffff), juce::Colour (0xffe5484d),
                                                            juce::Colour (0xffe8863a), juce::Colour (0xff46c46a),
                                                            juce::Colour (0xffa879ff) };
-                const int curChan = processor.getBandChan (band);
+                const int  curChan = processor.getBandChan (band);
+                /* Mono 轨（主输入 < 2 声道）没有立体声拓扑：
+                   Left / Right / Mid / Side 全部置灰，只允许 Stereo */
+                const bool stereo = processor.isStereoInput();
 
                 juce::PopupMenu chanMenu;
 
                 for (int cm = 0; cm < 5; ++cm)
-                    chanMenu.addItem (1101 + cm, chanNames[cm], true, cm == curChan,
+                    chanMenu.addItem (1101 + cm, chanNames[cm], (cm == 0 || stereo), cm == curChan,
                                       makeChanIcon (cm));
 
                 m.addSubMenu (Fusion::U8 ("CHANNEL"), chanMenu, true,
@@ -1571,6 +1646,9 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
 
 void SpectrumDisplay::mouseDrag (const juce::MouseEvent& e)
 {
+    if (bypassVisual)          // BYPASS：拖拽一律不生效
+        return;
+
     /* 泪滴尖端拖动：尖端跟随鼠标 y → 反解 RANGE */
     if (rngTipDrag && rngTipParam != nullptr)
     {
@@ -1625,7 +1703,11 @@ void SpectrumDisplay::mouseDrag (const juce::MouseEvent& e)
                 dragFreq->getNormalisableRange().convertTo0to1 (f));
         }
 
-        if (dragGain != nullptr)
+        if (isCutBand (activeBand))
+        {
+            dragBandQFromY (activeBand, pos.y);   // 低切/高切：竖直 = 共振 Q
+        }
+        else if (dragGain != nullptr)
         {
             const float dbPerPx = (eqTop - eqBot) / (float) plotH;
             /* 屏幕向下 y 增大 → 衰减；向上 → 提升（与直接拖频点方向一致） */
@@ -1643,15 +1725,26 @@ void SpectrumDisplay::mouseDrag (const juce::MouseEvent& e)
             dragFreq->getNormalisableRange().convertTo0to1 (
                 sslClampFreq (processor, activeBand, freqOfX (pos.x))));
 
-    if (dragGain != nullptr)
+    /* 低切 / 高切段没有增益维度：竖直拖动改共振 Q */
+    if (isCutBand (activeBand))
+    {
+        dragBandQFromY (activeBand, pos.y);
+    }
+    else if (dragGain != nullptr)
+    {
         dragGain->setValueNotifyingHost (
             dragGain->getNormalisableRange().convertTo0to1 (gainOfY (pos.y)));
+    }
 
     repaint();
 }
 
 void SpectrumDisplay::mouseUp (const juce::MouseEvent&)
 {
+    /* BYPASS：拖拽状态已在 setBypassed 里收干净，这里不再重复处理 */
+    if (bypassVisual)
+        return;
+
     /* 松开泪滴尖端：结束 RANGE 手势 */
     if (rngTipDrag)
     {
@@ -1692,6 +1785,9 @@ void SpectrumDisplay::mouseUp (const juce::MouseEvent&)
 
 void SpectrumDisplay::mouseMove (const juce::MouseEvent& e)
 {
+    if (bypassVisual)          // BYPASS：不悬停、不弹浮窗、不改鼠标指针
+        return;
+
     /* 悬停判定收紧到"正压在频点上"（节点圆大小），
        靠近不再弹出悬浮框 —— 杜绝误触；
        拖拽抓取仍用 18px 宽容半径（mouseDown 里的 bandAt 默认值） */
@@ -1762,6 +1858,9 @@ void SpectrumDisplay::mouseExit (const juce::MouseEvent&)
 
 void SpectrumDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 {
+    if (bypassVisual)          // BYPASS：双击开/关频段不生效
+        return;
+
     int hit = bandAt (e.position);
 
     if (hit < 0)
@@ -1777,6 +1876,9 @@ void SpectrumDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 void SpectrumDisplay::mouseWheelMove (const juce::MouseEvent& e,
                                       const juce::MouseWheelDetails& wheel)
 {
+    if (bypassVisual)          // BYPASS：滚轮调 Q / RANGE 不生效
+        return;
+
     const bool ctrl = e.mods.isCtrlDown() || e.mods.isCommandDown();
 
     /* 干净模式：滚轮悬停在作用区虚线（整条线）上 = 调该段 RANGE 宽度，
@@ -1822,6 +1924,24 @@ void SpectrumDisplay::mouseWheelMove (const juce::MouseEvent& e,
             const auto nxt = juce::jlimit (-Fusion::gainRange, Fusion::gainRange,
                                            cur + delta * 12.0f);
             p->setValueNotifyingHost (p->getNormalisableRange().convertTo0to1 (nxt));
+        }
+    }
+    else if (isCutBand (hit))
+    {
+        /* 悬停在低切 / 高切频点上滚滚轮 = 逐档切斜率：
+           6 → 12 → 18 → 24 → 30 → 36 → 48 → 72 → 96 → BRICKWALL(192 dB/oct)。
+           上滚变陡；Shift = 一次跳 3 档，快速摸到砖墙。
+           共振 Q 交给竖直拖动（见 mouseDrag），分工不冲突。 */
+        if (auto* p = processor.apvts.getParameter (IDs::bSlope (hit)))
+        {
+            const auto& steps = Fusion::cutSlopeSteps();
+            const int   jump  = e.mods.isShiftDown() ? 3 : 1;
+            const int   idx   = juce::jlimit (0, Fusion::numCutSlopes - 1,
+                                  Fusion::cutSlopeIndex (processor.getBandSlope (hit))
+                                  + (delta > 0 ? jump : -jump));
+
+            p->setValueNotifyingHost (
+                p->getNormalisableRange().convertTo0to1 (steps[(size_t) idx]));
         }
     }
     else

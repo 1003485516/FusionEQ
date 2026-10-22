@@ -56,27 +56,60 @@ public:
         repaint();
     }
 
+    /* BYPASS（面板按钮 或 宿主的 bypass 参数）：频谱整体变灰、禁止一切交互
+       —— 频点/黄虚线/浮窗全部不动，避免 bypass 期间改了设置却没生效、
+          退出 bypass 后频点串到别的位置。 */
+    void setBypassed (bool b)
+    {
+        if (bypassVisual == b)
+            return;
+
+        bypassVisual = b;
+
+        /* 中断进行中的一切交互，并把宿主手势收干净（否则 undo 状态卡住） */
+        if (gestureActive)
+            endEdit();
+
+        if (dynDragParam != nullptr) { dynDragParam->endChangeGesture(); dynDragParam = nullptr; }
+        if (rngTipParam  != nullptr) { rngTipParam->endChangeGesture();  rngTipParam  = nullptr; }
+
+        activeBand = hoverBand = selectedBand = -1;
+        hudPinBand = hudShowBand = -1;
+        hudIdleMs = 0;
+        hudAlpha = 0.0f;
+        hudDynVis = 0.0f;
+        holdListen = holdDragActive = false;
+        dynKnobDrag = rngTipDrag = false;
+        dynKnobBand = rngTipBand = -1;
+        cursorHint = -1;
+        processor.setListenBand (-1);
+
+        /* SSL 观察模式本就不收鼠标；退出 bypass 时按当前模式还原 */
+        setInterceptsMouseClicks (! b && showNodes, false);
+        staticDirty = true;
+        repaint();
+    }
+
+    bool isBypassShown() const noexcept { return bypassVisual; }
+
     /* SSL 通透模式：频谱只用来观察曲线走向 —— 不画频点、不响应鼠标，
        所有调节都走机架旋钮。其它模式恢复频点交互。 */
     void setNodesVisible (bool v)
     {
-        if (showNodes == v)
+        if (showNodes != v)
         {
-            /* 兜底：即使状态没变，也强制同步鼠标开关，
-               防止任何路径把 intercepts 留在错误状态 */
-            setInterceptsMouseClicks (v, false);
-            return;
+            showNodes = v;
+
+            if (! v)
+            {
+                activeBand = hoverBand = selectedBand = -1;
+                processor.setListenBand (-1);
+            }
         }
 
-        showNodes = v;
-
-        if (! v)
-        {
-            activeBand = hoverBand = selectedBand = -1;
-            processor.setListenBand (-1);
-        }
-
-        setInterceptsMouseClicks (v, false);
+        /* 兜底：无论状态有没有变都强制同步鼠标开关。
+           BYPASS 优先级最高 —— 切模式时不能把 bypass 的禁用给解掉 */
+        setInterceptsMouseClicks (! bypassVisual && showNodes, false);
         staticDirty = true;
         repaint();
     }
@@ -98,6 +131,14 @@ private:
     float nodeYOf (int band) const;
     float bandCurveDbAt (int band, float freq) const;
 
+    /* 低切 / 高切段：没有增益维度，竖直方向改为共振 Q。
+       绘制与拖拽必须共用同一套换算，否则节点会与光标错位（跟手是硬要求）。
+       cutQToDispDb / cutDispDbToQ 互为反函数：Q → 竖轴 dB ↔ 竖轴 dB → Q。 */
+    static float cutQToDispDb (float q) noexcept;
+    static float cutDispDbToQ (float db) noexcept;
+    bool  isCutBand (int band) const;
+    void  dragBandQFromY (int band, float yPos);
+
     FusionEQAudioProcessor& processor;
 
     juce::Colour accent { 0xff0e9bd6 };
@@ -106,6 +147,7 @@ private:
 
     bool holdPeaks = false;
     bool showNodes = true;         // false = SSL 通透模式：纯观察视图
+    bool bypassVisual = false;     // true = BYPASS：频谱变灰 + 禁用一切交互
     std::vector<float> peaks;
 
     static constexpr int padL = 38, padR = 24, padT = 12, padB = 24;
@@ -122,6 +164,7 @@ private:
 
     juce::RangedAudioParameter* dragFreq = nullptr;
     juce::RangedAudioParameter* dragGain = nullptr;
+    juce::RangedAudioParameter* dragQ    = nullptr;   // 低切/高切：竖直拖动改的是 Q
     bool gestureActive = false;
     bool holdListen    = false;     // 正在按住浮窗耳机按钮监听（松开即停）
     bool holdDragActive = false;    // 按住监听后已越过阈值、进入相对扫频
@@ -169,8 +212,7 @@ private:
     int hudShowBand = -1;                                   // 淡出期间仍要绘制的段（alpha>0 期间保持）
     mutable int hudBelowBand = -1;                          // 浮窗当前落在频点下方的段（滞回防上下翻转闪烁）
     juce::Rectangle<float> hudRect (int band) const;        // 浮窗整体
-    juce::Rectangle<float> hudHeadRect (int band) const;    // 耳机开关按钮
-    juce::Rectangle<float> hudCloseRect (int band) const;   // × 关闭按钮
+    juce::Rectangle<float> hudHeadRect (int band) const;    // 耳机开关按钮（浮窗唯一控件）
     juce::Rectangle<float> hudDynRect (int band) const;     // DYN 开关（干净模式）
     juce::Rectangle<float> hudKnobRect (int band, int k) const; // 压缩小旋钮 0THR/1RNG/2ATT/3REL
     void drawHUD (juce::Graphics&);

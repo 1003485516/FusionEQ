@@ -1,2 +1,6 @@
-# 强制 shell 脚本统一为 LF 换行，避免在 macOS/Linux 上因 CRLF 导致 shebang 报错
 *.sh text eol=lf
+*.yml text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.iss text eol=crlf
+*.png binary

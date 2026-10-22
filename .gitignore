@@ -14,3 +14,16 @@ JUCE/
 
 # ---- 资源备份目录（不参与构建）----
 Resources/backup/
+
+# ---- Windows 构建产物 / 诊断 ----
+build_aax/
+_diag/
+build_log.txt
+install_log.txt
+
+# ---- 资源备份 / 预览图（不参与构建）----
+*.bak
+logo_preview.png
+menu_icons.png
+old_lowcut_zoom.png
+preview_*.png

@@ -35,6 +35,8 @@ namespace IDs
     inline juce::String bGain (int i) { return "band" + juce::String (i) + "Gain"; }
     inline juce::String bQ    (int i) { return "band" + juce::String (i) + "Q"; }
     inline juce::String bOn   (int i) { return "band" + juce::String (i) + "On"; }
+    /* 低切 / 高切段专属：斜率级数 0=12 1=24 2=36 dB/oct（其余类型忽略） */
+    inline juce::String bSlope(int i) { return "band" + juce::String (i) + "Slope"; }
 
     /* 动态压缩（干净模式专属，F6 式每段动态 EQ；其它模式忽略这些参数） */
     inline juce::String bDynOn  (int i) { return "band" + juce::String (i) + "DynOn";  }

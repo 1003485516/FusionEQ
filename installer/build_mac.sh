@@ -25,6 +25,26 @@ if [ -z "${JUCE_DIR:-}" ]; then
 fi
 echo "[*] JUCE: $JUCE_DIR"
 
+# ---- 定位 AAX SDK（可选：没有则不产出 Pro Tools 版）----
+# 支持三种来源：环境变量 AAX_SDK_PATH / 项目根 aax-sdk* / ~/sdk/aax-sdk*
+if [ -z "${AAX_SDK_PATH:-}" ]; then
+    for c in "$PROJ"/aax-sdk* "$HOME"/sdk/aax-sdk*; do
+        # SDK 可能有一层或多层嵌套目录，以 Interfaces/AAX.h 为准
+        H="$(find "$c" -maxdepth 3 -path '*Interfaces/AAX.h' 2>/dev/null | head -1)"
+        if [ -n "$H" ]; then
+            AAX_SDK_PATH="$(dirname "$(dirname "$H")")"
+            break
+        fi
+    done
+fi
+if [ -n "${AAX_SDK_PATH:-}" ] && [ -f "${AAX_SDK_PATH}/Interfaces/AAX.h" ]; then
+    echo "[*] AAX SDK: $AAX_SDK_PATH (将产出 Pro Tools 版)"
+    AAX_ARG="-DAAX_SDK_PATH=$AAX_SDK_PATH"
+else
+    echo "[-] 未找到 AAX SDK（可设 AAX_SDK_PATH），跳过 Pro Tools 版"
+    AAX_ARG=""
+fi
+
 # ---- 选择生成器 ----
 if command -v ninja >/dev/null 2>&1; then
     GEN="-G Ninja"
@@ -37,7 +57,7 @@ BUILD="$PROJ/build_mac"
 cmake -B "$BUILD" $GEN \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
-    -DJUCE_DIR="$JUCE_DIR"
+    -DJUCE_DIR="$JUCE_DIR" $AAX_ARG
 
 cmake --build "$BUILD" --config Release
 

@@ -21,6 +21,15 @@
 #    配置后：插件会被签名 + 公证 + 装订，用户双击即可安装，无需「仍要打开」。
 #    未配置这些 Secret 时，自动跳过签名，仅产出未签名 dmg（与之前行为一致）。
 #
+#  AAX（Pro Tools）支持（可选）：
+#    AAX SDK 是 Avid 专有授权软件，【禁止公开分发】，因此不进本仓库。
+#    做法：在你的 GitHub 账号下建一个【私有】仓库（如 FusionEQ-AAX-SDK），
+#    把 SDK 内容（仓库根目录直接含 Interfaces/AAX.h）推上去，然后配置两个 Secret：
+#      AAX_SDK_REPO : 私有仓库全名，如 "1003485516/FusionEQ-AAX-SDK"
+#      AAX_SDK_PAT  : 有该私有仓库读权限的 Personal Access Token (classic, scope: repo)
+#    配置后 CI 会私密拉取 SDK 并同时产出 VST3 + AU + AAX + Standalone 四个产物。
+#    未配置时自动跳过 AAX，只产出 VST3/AU/Standalone（行为与之前一致）。
+#
 #  说明：
 #    - JUCE 版本锁定 7.0.12（项目 CMakeLists 使用了 JUCE 8 已移除的
 #      juce_generate_juce_header，故不能用 JUCE 8）。
@@ -43,6 +52,7 @@ permissions:
 
 env:
   JUCE_VERSION: "7.0.12"
+  AAX_SDK_REPO: ${{ secrets.AAX_SDK_REPO }}   # 工作流级 env 可读 secrets，供 step 的 if 判断
 
 jobs:
   build-macos:
@@ -90,13 +100,47 @@ jobs:
         if: steps.cache-juce.outputs.cache-hit == 'true'
         run: echo "JUCE_DIR=${{ github.workspace }}/JUCE" >> "$GITHUB_ENV"
 
-      # ---- 配置（通用二进制）----
+      # ---- 私密拉取 AAX SDK（私有仓库；未配置 Secret 时跳过）----
+      # Avid 禁止公开分发 SDK，故放【私有仓库】+ PAT 拉取，见文件头说明
+      - name: Checkout AAX SDK (private)
+        if: env.AAX_SDK_REPO != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.AAX_SDK_REPO }}
+          token: ${{ secrets.AAX_SDK_PAT }}
+          path: sdk/aax-sdk
+          fetch-depth: 1
+
+      # ---- 定位 AAX SDK 根目录（兼容一层/多层嵌套；无 SDK 时留空）----
+      - name: Locate AAX SDK
+        run: |
+          AAX_ROOT=""
+          if [ -d sdk/aax-sdk ]; then
+            H=$(find sdk/aax-sdk -type f -path '*Interfaces/AAX.h' 2>/dev/null | head -1 || true)
+            if [ -n "$H" ]; then
+              AAX_ROOT=$(dirname "$(dirname "$H")")
+              echo "[*] AAX SDK: $AAX_ROOT"
+            fi
+          fi
+          if [ -n "$AAX_ROOT" ]; then
+            echo "AAX_SDK_PATH=$AAX_ROOT" >> "$GITHUB_ENV"
+            echo "HAS_AAX=1" >> "$GITHUB_ENV"
+          else
+            echo "[-] 未配置 AAX SDK Secret，跳过 Pro Tools 版"
+            echo "HAS_AAX=0" >> "$GITHUB_ENV"
+          fi
+
+      # ---- 配置（通用二进制；有 SDK 时附带 AAX）----
       - name: Configure (CMake)
         run: |
-          cmake -B build_mac -G Ninja \
+          ARGS="-B build_mac -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
-            -DJUCE_DIR="$JUCE_DIR"
+            -DCMAKE_OSX_ARCHITECTURES=x86_64;arm64 \
+            -DJUCE_DIR=$JUCE_DIR"
+          if [ "$HAS_AAX" = "1" ]; then
+            ARGS="$ARGS -DAAX_SDK_PATH=$AAX_SDK_PATH"
+          fi
+          cmake $ARGS
 
       # ---- 构建 ----
       - name: Build
@@ -151,6 +195,10 @@ jobs:
             --sign "$IDENTITY" "$ART/AU/Fusion EQ.component"
           codesign --force --options runtime --timestamp \
             --sign "$IDENTITY" "$ART/Standalone/Fusion EQ.app"
+          if [ -d "$ART/AAX/Fusion EQ.aaxplugin" ]; then
+            codesign --force --options runtime --timestamp \
+              --sign "$IDENTITY" "$ART/AAX/Fusion EQ.aaxplugin"
+          fi
 
       # =====================================================================
       #  打包 dmg（复用本地脚本；dmg 内为已签名产物）

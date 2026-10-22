@@ -31,6 +31,37 @@ static constexpr float gainRange  = 20.0f;    // ±dB（Manley Massive Passive �
 static constexpr float qMin       = 0.1f;
 static constexpr float qMax       = 40.0f;
 
+/* 低切 / 高切段斜率档位（滚轮逐档，默认第 0 档 6 dB/oct）。
+   全部用二阶级（12 dB/oct）叠加；奇数档额外补一个一阶（6 dB/oct）。
+   末档 BRICKWALL = 192 dB/oct（16 节），即"砖墙"。 */
+static constexpr int numCutSlopes = 10;
+inline const std::array<float, numCutSlopes>& cutSlopeSteps()
+{
+    static const std::array<float, numCutSlopes> s { 6.0f, 12.0f, 18.0f, 24.0f, 30.0f,
+                                                     36.0f, 48.0f, 72.0f, 96.0f, 192.0f };
+    return s;
+}
+inline const std::array<juce::String, numCutSlopes>& cutSlopeNames()
+{
+    static const std::array<juce::String, numCutSlopes> s {
+        "6 dB/oct", "12 dB/oct", "18 dB/oct", "24 dB/oct", "30 dB/oct",
+        "36 dB/oct", "48 dB/oct", "72 dB/oct", "96 dB/oct", "BRICKWALL" };
+    return s;
+}
+/* 当前斜率值 → 最近的档位下标 */
+inline int cutSlopeIndex (float db) noexcept
+{
+    const auto& s = cutSlopeSteps();
+    int best = 0;
+    for (int i = 1; i < numCutSlopes; ++i)
+        if (std::abs (db - s[(size_t) i]) < std::abs (db - s[(size_t) best]))
+            best = i;
+    return best;
+}
+
+/* 截止点补偿：已废弃。精确 N 阶 Butterworth 的 -3 dB 点本来就落在截止
+   频率上（见 PluginProcessor.cpp cutSlopeQ），任何补偿都会把曲线推离节点。 */
+
 /* AIR 平行增益：平方律，满程 +18 dB 平行叠加 */
 static constexpr float airMaxLin  = 7.0f;
 inline float airLinear (float a) noexcept { return a * a * airMaxLin; }
@@ -280,7 +311,7 @@ inline const std::array<ModeSpec, numModes>& getModeSpecs()
             FUSION_TILT(9000.0f, 0.0f, 0.70f),
             4, 0.707f,
             {
-                FUSION_BAND(LowShelf,  60.0f,   0.0f, 0.70f),
+                FUSION_BAND(LowCut,60.0f,   0.0f, 0.70f),
                 FUSION_BAND(Bell,      200.0f,  0.0f, 1.00f),
                 FUSION_BAND(Bell,      600.0f,  0.0f, 1.00f),
                 FUSION_BAND(Bell,      2500.0f, 0.0f, 1.00f),

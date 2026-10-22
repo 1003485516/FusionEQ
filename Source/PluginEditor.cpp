@@ -37,7 +37,14 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
     /* 拖拽窗口边缘任意缩放：原生边框 + 等比约束（0.5×~2×），
        内容按 1180×932 逻辑画布整体仿射缩放（见 resized） */
     setResizable (true, false);
-    setResizeLimits (unitWidth / 2, unitHeight / 2, unitWidth * 2, unitHeight * 2);
+    /* ⚠️ 最小高度必须按【收起态】算，不能按 932：频谱收起时窗口只有
+       collapsedH(=932-360) 逻辑高。若下限仍是 932/2=466，收起动画请求的
+       物理高度(0.7× 时 400)会被宿主 checkSizeConstraint 钳位抬到 466，
+       而 JUCE 的 ContentWrapper 在 resizeHostWindow 回调里带着
+       resizingParent 守卫、不会把编辑器同步到被钳位后的尺寸 ——
+       编辑器就此比宿主窗口小一截，露出永久黑边（右下两块）。
+       收起态 572 逻辑 × 0.5 最小缩放 = 286，即物理下限。 */
+    setResizeLimits (unitWidth / 2, (unitHeight - scopeH) / 2, unitWidth * 2, unitHeight * 2);
     getConstrainer()->setFixedAspectRatio ((double) unitWidth / (double) unitHeight);
 
     addAndMakeVisible (canvas);     // 逻辑画布（其余控件全部挂到这里）
@@ -47,6 +54,16 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
     juce::LookAndFeel::setDefaultLookAndFeel (&fusionLook);
 
     /* ---- 顶栏 ---- */
+    /* OH Audio 品牌徽标：编译期嵌入（已裁掉底部水印、平滑抠透明背景），运行时零文件依赖 */
+    {
+        int sz = 0;
+        if (const char* data = BinaryData::getNamedResource ("oh_audio_logo_png", sz))
+            ohLogo = juce::ImageFileFormat::loadFrom (data, (size_t) sz);
+        if (const char* data = BinaryData::getNamedResource ("oh_audio_logo_light_png", sz))
+            ohLogoLight = juce::ImageFileFormat::loadFrom (data, (size_t) sz);
+        if (!ohLogoLight.isValid())
+            ohLogoLight = ohLogo;        // 浅色版缺失时回退到原版，避免空图
+    }
     /* logoSub 已改由 paint() 直接绘制（动态字距撑满），不再作为控件 */
 
     const auto& specs = Fusion::getModeSpecs();
@@ -113,6 +130,24 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
     };
     canvas.addAndMakeVisible (scopeToggle);
 
+    /* 机架隐藏 = 频谱扩展（与顶栏收频谱反向）：隐藏旋钮机架，把空间让给频谱。
+       仅「干净」模式可用，其他模式置灰不可点（refreshMode / timerCallback 同步）。 */
+    rackToggle.setOpen (true);          // 默认机架已隐藏 → 箭头朝上（点按 = 还原机架）
+    rackToggle.setTooltip (Fusion::U8 ("\u6269\u5c55\u9891\u8c31 / \u9690\u85cf\u65cb\u94ae\uff08\u4ec5\u5e72\u51c0\u6a21\u5f0f\uff09"));
+    rackToggle.onClick = [this]()
+    {
+        rackHidden = ! rackHidden;
+        rackToggle.setOpen (rackHidden);
+
+        if (rackHidden && ! scopeOpen)  // 扩展频谱时顺带展开被收起的频谱
+        {
+            scopeOpen = true;
+            scopeToggle.setOpen (true);
+        }
+    };
+    rackToggle.setEnabled (false);      // 初始按当前模式决定（构造后首帧 timerCallback/refreshMode 同步）
+    canvas.addAndMakeVisible (rackToggle);
+
     /* 模式说明文字已按需求全部移除（顶部只留模式标签 / S-EQ · P-EQ 艺术字） */
 
     /* ---- 频谱 ---- */
@@ -170,7 +205,7 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
     refreshMode();
 
     /* 一切就绪后才允许设置尺寸（触发首次 resized()） */
-    setSize (unitWidth, unitHeight);
+    setSize (int (unitWidth * 0.7f), int (unitHeight * 0.7f));   // 默认开窗口缩小 30%
     startTimerHz (24);
 }
 
@@ -197,24 +232,83 @@ void FusionEQAudioProcessorEditor::timerCallback()
                 scopeAnim = target;
 
             const float e = scopeAnim * scopeAnim * (3.0f - 2.0f * scopeAnim);
-            const int   collapsedH = unitHeight - scopeH - 8;
+            /* 收起态高度 = 932 - 360：正好容纳 顶栏+说明+分隔+机架(366)+底栏 */
+            const int collapsedH = unitHeight - scopeH;
             const int   newH = collapsedH + juce::roundToInt ((unitHeight - collapsedH) * e);
 
             /* 逻辑高度 → 物理窗口高度（× uiScale）；动画不受约束器限制，
                结束后把拖拽等比约束同步到目标状态的比例 */
             const int phyH = juce::roundToInt ((float) newH * uiScale);
 
-            if (phyH != getHeight())
-                setSize (getWidth(), phyH);
-            else
-                resized();
-
+            /* ⚠️ 必须先把等比约束同步到目标比例，再 setSize：
+               否则约束器仍持有旧比例，会在 setSize 里把"只改高度"反向算成
+               "宽度也要按旧比例缩小" —— 宿主窗口宽度没跟着缩，
+               右侧与底部就会露出黑边（宽度本该保持不变：
+               unitWidth/newH × (newH×uiScale) = unitWidth×uiScale = 当前宽度）。*/
             getConstrainer()->setFixedAspectRatio (
                 (double) unitWidth / (double) juce::jmax (1, newH));
+
+            if (phyH != getHeight())
+            {
+                /* 宿主可能不照单全收：它有自己的最小窗口尺寸 / 会拿约束器
+                   再钳一遍（Cubase 就是）。JUCE 的 ContentWrapper 在
+                   resizeHostWindow → onSize 回环里带着 resizingParent 守卫，
+                   **不会**把编辑器同步到被钳位后的尺寸 —— 编辑器就此比
+                   宿主窗口小，露出黑边。这里在 setSize 之后立刻比对父组件：
+                   尺寸变了且不等于我们请求的值 → 就地跟随宿主实际尺寸。 */
+                const int parentHBefore = (getParentComponent() != nullptr
+                                               ? getParentComponent()->getHeight() : getHeight());
+                setSize (getWidth(), phyH);
+
+                if (auto* parent = getParentComponent())
+                    if (parent->getHeight() != parentHBefore
+                        && parent->getHeight() != getHeight())
+                        setSize (parent->getWidth(), parent->getHeight());
+            }
+            else
+                resized();
         }
     }
 
+    /* 机架隐藏 = 频谱扩展动画：窗口高度不变，机架高度让给频谱 */
+    {
+        const float target = rackHidden ? 1.0f : 0.0f;
+
+        if (std::abs (rackAnim - target) > 0.0005f)
+        {
+            const float dt = 1.0f / 24.0f;
+            const float k  = 1.0f - std::exp (-dt / 0.055f);
+            rackAnim += (target - rackAnim) * k;
+
+            if (std::abs (rackAnim - target) < 0.02f)
+                rackAnim = target;
+
+            resized();     // 窗口尺寸不变，只重排逻辑画布
+        }
+    }
+
+    /* 黑边自愈（稳态）：两个动画都停下后，编辑器尺寸必须与父组件
+       （JUCE 给 VST3/AAX 的 ContentWrapper）严格一致。以前的各种残留
+       —— 宿主钳位、DPI 变化、旧版本遗留的不同步 —— 都会让编辑器比宿主
+       窗口小，露出 ContentWrapper 的纯黑底。这里 24Hz 巡检，发现不一致
+       就地补齐（最多 42ms 延迟，肉眼无感）。
+       动画播放期间不修：那期间编辑器正在主动请求新尺寸，父组件还没跟上。 */
+    if (std::abs (scopeAnim - (scopeOpen ? 1.0f : 0.0f)) <= 0.0005f
+        && std::abs (rackAnim  - (rackHidden ? 1.0f : 0.0f)) <= 0.0005f)
+    {
+        if (auto* parent = getParentComponent())
+            if (parent->getWidth() != getWidth() || parent->getHeight() != getHeight())
+                setSize (parent->getWidth(), parent->getHeight());
+    }
+
     if (processor.getMode() != lastMode)
+        refreshMode();
+
+    /* 机架扩展按钮仅「干净」模式可用，其他模式置灰不可点 */
+    rackToggle.setEnabled (processor.getMode() == Fusion::Mode::Clean);
+
+    /* 机架从隐藏恢复显示：refreshMode 按当前模式重设条带可见性 */
+    if (rackCompsHidden && ! rackHidden)
         refreshMode();
 
     syncToggleText();
@@ -290,7 +384,9 @@ void FusionEQAudioProcessorEditor::refreshMode()
 
     /* Pultec 模块条带：只在温润模式显示；温润模式无低切（原机无此功能）
        低频模块 = BOOST/ATTEN/CPS；高频模块 = BOOST/BANDWIDTH/KCS；ATTEN SEL = 独立板块 */
-    hpfStrip.setVisible (! isPultec);
+    /* 干净模式不再单列低切卡片（首个频点默认 LOW CUT 已覆盖该功能，卡片显得鸡肋）；
+       其它硬件模式保留各自的滤波模块（SSL FILTER / 1073 HPF / API 215L / 温暖 MP） */
+    hpfStrip.setVisible (! isPultec && m != Fusion::Mode::Clean);
     hpfStrip.setSslFilter (isSSL);   // SSL：LOW CUT → 原版 FILTER（HP/LP 红钮）
     if (m == Fusion::Mode::Manley)
         hpfStrip.setMpFilt (true);   // 温暖：MP 高/低切（OFF 在旋钮端点档）
@@ -306,6 +402,7 @@ void FusionEQAudioProcessorEditor::refreshMode()
     plLowStrip.setVisible   (isPultec);
     plHighStrip.setVisible  (isPultec);
     plAttenStrip.setVisible (isPultec);
+    airStrip.setVisible (true);        // AIR 全模式常驻：机架隐藏恢复后必须拉回（此前只藏不复显，导致 Magic Air 永久消失）
 
     if (isPultec)
     {
@@ -618,6 +715,30 @@ void FusionEQAudioProcessorEditor::refreshMode()
     seqBadge.setAccent (accent);
     seqBadge.setText (badgeFor[badgeIdx]);
 
+    /* 机架扩展按钮仅「干净」模式可用；切走干净模式时自动还原被隐藏的机架 */
+    rackToggle.setEnabled (m == Fusion::Mode::Clean);
+
+    if (m != Fusion::Mode::Clean && rackHidden)
+    {
+        rackHidden = false;
+        rackToggle.setOpen (false);    // rackAnim 动画由 timerCallback 收敛回 0
+    }
+
+    if (rackHidden)                    // 隐藏状态下切模式：保持机架整体隐藏
+    {
+        rackCompsHidden = true;
+        hpfStrip.setVisible (false);
+        for (auto* s : bandStrips)
+            s->setVisible (false);
+        plLowStrip.setVisible   (false);
+        plHighStrip.setVisible  (false);
+        plAttenStrip.setVisible (false);
+        airStrip.setVisible     (false);
+        bypassGem.setVisible    (false);
+    }
+    else
+        rackCompsHidden = false;       // 恢复显示：条带已按当前模式重设可见性
+
     lastMode = m;
     repaint();
 }
@@ -881,11 +1002,25 @@ void FusionEQAudioProcessorEditor::paint (juce::Graphics& g)
         g.drawHorizontalLine (1, r.getX(), r.getRight());
     }
 
-    /* Logo：极简超细艺术字（方案⑥）—— TextLayout 精确排版，双色一体 */
+    /* 品牌区：左侧直接印 OH Audio 徽标（无贴纸底，随顶栏明暗自适应字色），
+       右侧接 FUSION EQ 字标；模式按钮整体右移为品牌让位（见 resized） */
     {
-        const float x0 = r.getX() + 20.0f;
+        const auto& logo = heavySkin ? ohLogo : ohLogoLight;   // 深色/浅色顶栏各用一版
+        const float brandH = 46.0f;                            // 徽标高度（上下各留 10）
+        const float aspect = logo.isValid()
+                              ? (float) logo.getWidth() / (float) logo.getHeight()
+                              : 0.93f;
+        const float bx     = r.getX() + 14.0f;                 // 顶栏最左对齐
+        const float by     = ((float) topBarH - brandH) / 2.0f;
 
-        auto logoFont = juce::Font (juce::Font ("Segoe UI Light", 31.0f, juce::Font::plain))
+        if (logo.isValid())                                    // 严格按比例绘制，绝不拉伸变形
+            g.drawImage (logo, juce::Rectangle<float> (bx, by, brandH * aspect, brandH));
+
+        /* —— FUSION EQ 字标（徽标右侧，整体右移为品牌让位）—— */
+        const float x0 = bx + brandH * aspect + 12.0f;
+        const float logoTopY = 4.0f;
+
+        auto logoFont = juce::Font (juce::Font (FUSION_LOGO_FONT, 31.0f, juce::Font::plain))
                             .withExtraKerningFactor (0.16f);
 
         juce::AttributedString as;
@@ -898,15 +1033,18 @@ void FusionEQAudioProcessorEditor::paint (juce::Graphics& g)
 
         juce::TextLayout tl;
         tl.createLayout (as, 10000.0f);
-        tl.draw (g, juce::Rectangle<float> (x0, 4.0f, tl.getWidth() + 4.0f, 44.0f));
+        const float logoH = tl.getHeight();   // 实测文字高度，规避各平台字体度量差异
+        tl.draw (g, juce::Rectangle<float> (x0, logoTopY, tl.getWidth() + 4.0f, logoH));
 
-        /* 副标题：固定适中字距 */
-        auto subFont = juce::Font (juce::Font ("Segoe UI", 10.0f, juce::Font::plain))
+        /* 副标题：固定适中字距；基线放在字标实测下沿 + 间隙 + 升部，
+           彻底杜绝 macOS 上字标与副标题重叠（不再依赖固定像素值）。 */
+        auto subFont = juce::Font (juce::Font (FUSION_UI_FONT, 10.0f, juce::Font::plain))
                            .withExtraKerningFactor (0.24f);
         g.setFont (subFont);
         g.setColour (heavySkin ? juce::Colour (0xff87929c) : juce::Colour (0xff98a2ac));
+        const float subBaseline = logoTopY + logoH + 4.0f + subFont.getAscent();
         g.drawSingleLineText ("6-BAND CHARACTER EQUALIZER",
-                              (int) x0 + 2, (int) (4.0f + 44.0f));
+                              (int) x0 + 2, (int) subBaseline);
     }
 
     /* 模式说明条（标题徽章 + 收起箭头行） */
@@ -931,50 +1069,57 @@ void FusionEQAudioProcessorEditor::paint (juce::Graphics& g)
         g.drawHorizontalLine (topBarH + descH - 1, r.getX(), r.getRight());
     }
 
-    /* 频谱区底（高度随收起动画伸缩） */
+    /* 频谱区底（高度随收起动画伸缩；机架隐藏扩展后夹紧不越过底栏） */
     const auto scopeY = (float) (topBarH + descH);
+    /* 与 resized() 同源的逻辑高度（不钳上界：窗口被宿主撑高时底栏背景
+       要跟着贴实际窗口底，否则会和底栏控件错开一条缝） */
+    const int  logicalH0 = juce::jmax (120, juce::roundToInt (getHeight()
+                                                        / juce::jmax (0.01f, uiScale)));
+    const float scopeBgH = juce::jmin ((float) scopeNowH + 16.0f,
+                                       (float) (logicalH0 - footH) - scopeY);
 
     if (heavySkin)
     {
         juce::ColourGradient sb (juce::Colour (barB[(size_t) ck]), 0.0f, scopeY,
-                            juce::Colour (chB[(size_t) ck]), 0.0f, scopeY + (float) (scopeNowH + 16), false);
+                            juce::Colour (chB[(size_t) ck]), 0.0f, scopeY + scopeBgH, false);
         g.setGradientFill (sb);
-        g.fillRect (r.withTop (scopeY).withHeight ((float) (scopeNowH + 16)));
+        g.fillRect (r.withTop (scopeY).withHeight (scopeBgH));
         g.setColour (juce::Colour (0x8c000000));
-        g.drawHorizontalLine (topBarH + descH + scopeNowH + 15, r.getX(), r.getRight());
+        g.drawHorizontalLine ((int) (scopeY + scopeBgH) - 1, r.getX(), r.getRight());
     }
     else
     {
         juce::ColourGradient sb (juce::Colour (0xffe4e8ec), 0.0f, scopeY,
-                        juce::Colour (0xffd9dee4), 0.0f, scopeY + (float) (scopeNowH + 16), false);
+                        juce::Colour (0xffd9dee4), 0.0f, scopeY + scopeBgH, false);
         g.setGradientFill (sb);
-        g.fillRect (r.withTop (scopeY).withHeight ((float) (scopeNowH + 16)));
+        g.fillRect (r.withTop (scopeY).withHeight (scopeBgH));
         g.setColour (cLineDk);
-        g.drawHorizontalLine (topBarH + descH + scopeNowH + 15, r.getX(), r.getRight());
+        g.drawHorizontalLine ((int) (scopeY + scopeBgH) - 1, r.getX(), r.getRight());
     }
 
-    /* 底栏 */
-    const auto footY = (float) (unitHeight - footH);
+    /* 底栏：贴实际窗口底（与 resized() 的 logicalH 同源，随频谱动画伸缩） */
+    const int  logicalH = logicalH0;
+    const auto footY    = (float) (logicalH - footH);
 
     if (heavySkin)
     {
         juce::ColourGradient fb (juce::Colour (barT[(size_t) ck]).darker (0.06f), 0.0f, footY,
-                                 juce::Colour (barB[(size_t) ck]), 0.0f, (float) unitHeight, false);
+                                 juce::Colour (barB[(size_t) ck]), 0.0f, (float) logicalH, false);
         g.setGradientFill (fb);
         g.fillRect (r.withTop (footY));
         g.setColour (juce::Colour (0x8c000000));
-        g.drawHorizontalLine (unitHeight - footH, r.getX(), r.getRight());
+        g.drawHorizontalLine ((int) footY, r.getX(), r.getRight());
         g.setColour (juce::Colour (0x22ffffff));
         g.drawHorizontalLine ((int) footY + 1, r.getX(), r.getRight());
     }
     else
     {
         juce::ColourGradient fb (juce::Colour (0xffe9edf1), 0.0f, footY,
-                             juce::Colour (0xffdfe4e9), 0.0f, (float) unitHeight, false);
+                             juce::Colour (0xffdfe4e9), 0.0f, (float) logicalH, false);
         g.setGradientFill (fb);
         g.fillRect (r.withTop (footY));
         g.setColour (cLineDk);
-        g.drawHorizontalLine (unitHeight - footH, r.getX(), r.getRight());
+        g.drawHorizontalLine ((int) footY, r.getX(), r.getRight());
     }
 }
 
@@ -984,17 +1129,38 @@ void FusionEQAudioProcessorEditor::resized()
     /* 拖拽缩放：窗口物理尺寸 → 整体仿射缩放逻辑画布（1180×932）。
        等比约束下 sx==sy；控件仍按逻辑坐标布局（子组件挂在 canvas 上）。 */
     uiScale = getWidth() / (float) unitWidth;
-    canvas.setBounds (0, 0, unitWidth, unitHeight);
+    /* 画布 bounds 取【编辑器实际尺寸】而不是固定 1180×932：
+       宿主可能给非等比尺寸（或动画/钳位残留），固定 bounds 时画布只覆盖
+       932·uiScale 高，多出来的底部直接露出 JUCE 包装窗口的纯黑
+       （ContentWrapperComponent::paint 是 fillAll(black)）。 */
+    const int logicalH = juce::jmax (120, juce::roundToInt (getHeight()
+                                                       / juce::jmax (0.01f, uiScale)));
+
+    /* ⚠️ 画布自身必须是【逻辑尺寸】(unitWidth × logicalH)，绝不能用物理窗口尺寸！
+       JUCE 父组件按自身【未变换前】的 bounds 裁剪子控件：子控件全部按逻辑坐标
+       (0..unitWidth, 0..logicalH) 布局，若画布 bounds = 物理 821×647，
+       逻辑坐标 x>821 / y>647 的内容会被画布本地裁掉，再经 uiScale(≈0.7) 缩放后
+       表现为——顶栏右侧按钮被拦腰切断、频谱右侧大片空白、条带第二排旋钮被裁、
+       底栏控件整体消失（"隐形裁剪线"在物理 x≈571 / y≈450）。
+       画布 = 逻辑尺寸时，变换后恰好铺满物理窗口，永不裁剪、永不露黑。 */
+    canvas.setBounds (juce::Rectangle<int> (unitWidth, logicalH));
     canvas.setTransform (juce::AffineTransform::scale (uiScale));
 
-    auto r = juce::Rectangle<int> (unitWidth, unitHeight);   // 逻辑坐标系
+    auto r = juce::Rectangle<int> (unitWidth, logicalH);   // 逻辑坐标系
+
+    /* 约束器比例始终跟随当前逻辑高度：用户拖拽后宿主按旧比例回算尺寸、
+       再把结果塞回给编辑器（onSize），比例自动跟上就不会再被钳位。
+       收起动画每帧也会设这个值，两者恒等。 */
+    getConstrainer()->setFixedAspectRatio ((double) unitWidth / (double) juce::jmax (1, logicalH));
 
     /* 顶栏 */
     auto top = r.removeFromTop (topBarH);
     /* logoSub 已改由 paint() 直接绘制（动态字距撑满），不再作为控件 */
 
     const int totalW = 6 * 110 + 5 * 7;
+    /* 模式按钮整体右移，给左侧 OH Audio 品牌徽标 + FUSION EQ 字标让位 */
     auto modesArea = top.withSizeKeepingCentre (totalW, 46);
+    modesArea.translate (64, 0);
     for (auto* b : modeButtons)
     {
         b->setBounds (modesArea.removeFromLeft (110).reduced (3, 5));
@@ -1009,16 +1175,28 @@ void FusionEQAudioProcessorEditor::resized()
     seqBadge.setBounds (modeTag.getBounds());
     scopeToggle.setBounds (desc.getCentreX() - 18, desc.getCentreY() - 13, 36, 26);
 
-    /* 频谱：高度随收起/展开动画伸缩 */
-    const float e = scopeAnim * scopeAnim * (3.0f - 2.0f * scopeAnim);
-    const int   scopeNow = juce::roundToInt ((float) scopeH * e);
+    /* 频谱：高度随收起/展开动画伸缩；机架隐藏时把机架高度让给频谱（反向功能） */
+    const float e  = scopeAnim * scopeAnim * (3.0f - 2.0f * scopeAnim);
+    const float er = rackAnim * rackAnim * (3.0f - 2.0f * rackAnim);
+    const int   scopeNow  = juce::roundToInt ((float) scopeH * e);
+    const int   rackNow   = juce::roundToInt ((float) rackH * (1.0f - er));
+    int         scopeTotal = scopeNow + (rackH - rackNow);
 
     r.removeFromTop (8);
 
-    if (scopeNow > 2)
+    /* 窗口比设计比例高 → 富余高度全给频谱；比设计比例矮 → 先保机架、
+       再压频谱（保底 60，避免频谱被压成一条线）。任何尺寸都能排布，
+       不会出现负高度的机架区。 */
+    {
+        const int avail    = juce::jmax (0, r.getHeight() - footH);
+        const int keepRack = rackNow > 2 ? rackNow : 0;
+        scopeTotal = juce::jlimit (0, juce::jmax (0, avail - keepRack), scopeTotal);
+    }
+
+    if (scopeTotal > 2)
     {
         spectrum.setVisible (true);
-        spectrum.setBounds (r.removeFromTop (scopeNow));
+        spectrum.setBounds (r.removeFromTop (scopeTotal));
     }
     else
     {
@@ -1026,11 +1204,32 @@ void FusionEQAudioProcessorEditor::resized()
         r.removeFromTop (2);           // 留一条分隔线位
     }
 
-    scopeNowH = scopeNow;
+    scopeNowH = scopeTotal;   // paint 的频谱背景按实际总高（含机架让位扩展）绘制
 
-    /* 机架 */
-    auto rack = r.removeFromTop (rackH);
+    /* 底栏：贴【实际窗口】底（而不是固定 932 画布底）——
+       收起频谱时窗口变矮，旧逻辑把底栏排到窗口外，机架下方露白 */
+    auto foot = r.removeFromBottom (footH);
+    foot.reduce (18, 0);
+
+    /* 机架：填满频谱与底栏之间的全部剩余空间
+       （展开时 ≈ rackH；隐藏时归零，空间已让给频谱） */
+    auto rack = r;
     rack.reduce (18, 0);
+
+    /* 机架完全隐藏：条带全部 setVisible(false) 停掉重绘（恢复由 timerCallback
+       调 refreshMode 按当前模式重设，避免与模式可见性规则打架） */
+    if (rackNow <= 2 && ! rackCompsHidden)
+    {
+        rackCompsHidden = true;
+        hpfStrip.setVisible (false);
+        for (auto* s : bandStrips)
+            s->setVisible (false);
+        plLowStrip.setVisible   (false);
+        plHighStrip.setVisible  (false);
+        plAttenStrip.setVisible (false);
+        airStrip.setVisible     (false);
+        bypassGem.setVisible    (false);
+    }
 
     /* 可见条带流式排布：SSL 4 段 = 6 条（HPF + LF/LMF/HMF/HF + AIR，自动加宽） */
     juce::Array<juce::Component*> visible;
@@ -1067,14 +1266,14 @@ void FusionEQAudioProcessorEditor::resized()
         bypassGem.setBounds (zone.withSizeKeepingCentre (62, 82));
     }
 
-    /* 底栏：AUTO GAIN 开关 + OVERSAMPLE 倍率选择 + OUTPUT 旋钮 */
-    auto foot = r.removeFromBottom (footH);
-    foot.reduce (18, 0);
-
+    /* 底栏（foot 已在机架之前按实际窗口底取出） */
     autoGainButton.setBounds (foot.getX(), foot.getY() + 22, 110, 32);
 
     if (outKnob != nullptr)
         outKnob->setBounds (foot.getX() + 132, foot.getY() + 12, 74, 54);
 
     osButton.setBounds (foot.getX() + 226, foot.getY() + 22, 138, 32);
+
+    /* 机架隐藏 = 频谱扩展（仅干净模式可用）：与顶栏收频谱箭头反向，且与它同一竖直中线 */
+    rackToggle.setBounds (scopeToggle.getX(), foot.getY() + 25, 36, 26);
 }
