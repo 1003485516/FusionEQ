@@ -29,15 +29,28 @@
    全局字体解析：
    · Windows：Segoe UI 缺 CJK 字形，DirectWrite 不会自动回退，中文会整段消失，
              故把默认无衬线 / Segoe 系列统一解析到微软雅黑（拉丁 + 中文齐全）。
-   · macOS ：系统默认字体（SF）原生支持 CJK（自动回退到苹方），无需解析；
-             但 Segoe UI* 在 macOS 不存在，若不做替换会被换成度量不符的回退
-             字体，导致字标（FUSION EQ）与副标题重叠。这里仅把这类 Windows
-             专用名字换成真实存在的 Helvetica Neue。
+   · macOS ：默认无衬线在构造函数切到苹方 PingFang SC（拉丁/数字/中文双全，
+             杜绝 JUCE 无逐字回退时的中文乱码）；Windows 专用字体名（Segoe 系列、
+             雅黑、Bahnschrift）在 macOS 不存在，统一解析到 Helvetica Neue。
    改动以平台宏隔离，Windows 行为与原版完全一致，不影响已发布的 1.0.2。
 --------------------------------------------------------------------------- */
 class FusionLook : public juce::LookAndFeel_V4
 {
 public:
+    FusionLook()
+    {
+    #if JUCE_MAC
+        /* macOS 防中文乱码：默认无衬线整体切到苹方 PingFang SC（拉丁/数字/中文齐全）。
+           之前 mac 版乱码有两个来源：① 源码曾为 GBK 编码（现已全部 UTF-8，clang 按
+           UTF-8 读入即正确）；② 默认字体不含 CJK 字形时，JUCE 的低级字形渲染不做
+           逐字字体回退，中文会渲染成豆腐块/乱码。显式指定双全字体后，模式按钮、
+           条带标题、频谱刻度等所有默认字体文本都保证可渲染。
+           显式指定 Helvetica Neue 的字标/副标题（FUSION_LOGO_FONT/FUSION_UI_FONT）
+           不受影响，字标度量与 1.0.2 保持一致。 */
+        setDefaultSansSerifTypefaceName ("PingFang SC");
+    #endif
+    }
+
     juce::Typeface::Ptr getTypefaceForFont (const juce::Font& f) override
     {
         const juce::String name = f.getTypefaceName();
@@ -52,11 +65,12 @@ public:
             return juce::Font::getDefaultTypefaceForFont (f2);
         }
 #else
-        /* macOS / 其它：仅替换 Windows 专用的 Segoe UI* / 微软雅黑 名字，
-           默认无衬线字体保持系统原生（SF），中文走系统 CJK 回退，正常显示。 */
+        /* macOS / 其它：仅替换 Windows 专用的 Segoe UI* / 微软雅黑 / Bahnschrift
+           名字（这些在 macOS 不存在，缺字时度量/字形不可控），统一换成真实存在的
+           Helvetica Neue；默认无衬线已在构造函数切到苹方，中文必然可渲染。 */
         if (name == "Segoe UI" || name == "Segoe UI Light"
             || name == "Segoe UI Variable" || name == "Segoe UI Semibold"
-            || name == "Microsoft YaHei")
+            || name == "Microsoft YaHei" || name == "Bahnschrift")
         {
             auto f2 (f);
             f2.setTypefaceName ("Helvetica Neue");
