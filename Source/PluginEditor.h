@@ -65,15 +65,24 @@ public:
             return juce::Font::getDefaultTypefaceForFont (f2);
         }
 #else
-        /* macOS / 其它：仅替换 Windows 专用的 Segoe UI* / 微软雅黑 / Bahnschrift
-           名字（这些在 macOS 不存在，缺字时度量/字形不可控），统一换成真实存在的
-           Helvetica Neue；默认无衬线已在构造函数切到苹方，中文必然可渲染。 */
+        /* macOS：默认无衬线（占位名 "Sans-Serif"）必须显式交回基类解析 ——
+           基类 LookAndFeel::getTypefaceForFont 才会应用构造函数里
+           setDefaultSansSerifTypefaceName("PingFang SC") 设置的苹方。
+           之前直接掉到 Font::getDefaultTypefaceForFont（平台默认 Helvetica），
+           绕过了苹方设置，导致默认字体文本（旋钮标签 / 模式按钮 / 条带标题）
+           的中文全部渲染成豆腐块 —— 此即 1.0.3 mac 版乱码的真正根因。 */
+        if (name == juce::Font::getDefaultSansSerifFontName())
+            return LookAndFeel_V4::getTypefaceForFont (f);
+
+        /* Windows 专用字体名（Segoe 系列 / 雅黑 / Bahnschrift）在 macOS 不存在；
+           这些名字只可能被中文文本请求，故映射到带 CJK 字形的苹方
+           （之前映射 Helvetica Neue 无中文字形，同样出豆腐块）。 */
         if (name == "Segoe UI" || name == "Segoe UI Light"
             || name == "Segoe UI Variable" || name == "Segoe UI Semibold"
             || name == "Microsoft YaHei" || name == "Bahnschrift")
         {
             auto f2 (f);
-            f2.setTypefaceName ("Helvetica Neue");
+            f2.setTypefaceName ("PingFang SC");
             return juce::Font::getDefaultTypefaceForFont (f2);
         }
 #endif
