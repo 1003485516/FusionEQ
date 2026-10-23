@@ -7,7 +7,7 @@
 ; /DBuildDir= 传进来；直接双击本脚本编译时则使用下面的默认路径。
 
 #define MyAppName "Fusion EQ"
-#define MyAppVersion "1.0.3"
+#define MyAppVersion "1.0.4"
 #define MyAppPublisher "OH Audio"
 
 ; 构建产物目录（绝对路径）。可由命令行 /DBuildDir=... 覆盖
