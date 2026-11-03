@@ -240,6 +240,57 @@ private:
     bool dark = false;
 };
 
+/* ---------------------------------------------------------------------------
+   S / M / L 尺寸切换（分段按钮）：供 Pro Tools 等无法拖拽缩放的宿主使用。
+   点击 = 把整窗 uiScale 切到对应档位（小窗 / 中窗 / 大窗），宿主会跟随重排。
+--------------------------------------------------------------------------- */
+class SizeSelector : public juce::Component
+{
+public:
+    std::function<void (int)> onPick;
+
+    SizeSelector()
+    {
+        static const char* labels[3] = { "S", "M", "L" };
+        for (int i = 0; i < 3; ++i)
+        {
+            auto* b = buttons.add (new juce::TextButton (labels[i]));
+            b->setClickingTogglesState (true);
+            b->setRadioGroupId (0x535a7a);          // 互斥高亮
+            b->getProperties().set ("fontH", 13.0);
+            b->onClick = [this, i]() { if (onPick) onPick (i); };
+            addAndMakeVisible (b);
+        }
+    }
+
+    void setActive (int idx)
+    {
+        for (int i = 0; i < 3; ++i)
+            buttons[i]->setToggleState (i == idx, juce::dontSendNotification);
+    }
+
+    void setAccent (juce::Colour c)
+    {
+        for (auto* b : buttons)
+        {
+            b->setColour (juce::TextButton::buttonOnColourId, c);
+            b->setColour (juce::TextButton::textColourOnId,  juce::Colours::white);
+        }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        const int gap = 3;
+        const int w = (r.getWidth() - 2 * gap) / 3;
+        for (int i = 0; i < 3; ++i)
+            buttons[i]->setBounds (r.getX() + i * (w + gap), r.getY(), w, r.getHeight());
+    }
+
+private:
+    juce::OwnedArray<juce::TextButton> buttons;
+};
+
 class FusionEQAudioProcessorEditor : public juce::AudioProcessorEditor,
                                      private juce::Timer
 {
@@ -319,6 +370,12 @@ private:
     std::vector<std::unique_ptr<BtnAttach>> bandAttach;
 
     Fusion::Mode lastMode = Fusion::Mode::Count;
+
+    /* --- S/M/L 尺寸切换（Pro Tools 等无法拖拽缩放的宿主用） --- */
+    std::unique_ptr<SizeSelector> sizeSelector;
+    int uiSizeIdx = 1;                 // 0=S, 1=M, 2=L（默认中窗）
+    void applyUiScale (float target);  // 把整窗缩放到目标 uiScale（保留当前展开/收起态）
+    int  bestSizeIndex (float s) const; // 当前实际缩放 → 最接近的档位（用于高亮）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FusionEQAudioProcessorEditor)
 };

@@ -16,6 +16,10 @@ namespace
     constexpr int footH   = 76;
     constexpr int rackGap = 8;
 
+    /* S/M/L 尺寸档位（uiScale = 物理尺寸 / 逻辑 1180×932）。
+       S=小窗 0.6× / M=中窗 0.8× / L=大窗 1.1×（受约束器 0.5×~2× 限制内） */
+    constexpr float uiScales[3] = { 0.6f, 0.8f, 1.1f };
+
     const juce::Colour cFace   { 0xfff4f6f8 };
     const juce::Colour cFace2  { 0xffe8ecf0 };
     const juce::Colour cLine   { 0xffc3cad2 };
@@ -202,10 +206,22 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
     };
     canvas.addAndMakeVisible (osButton);
 
+    /* ---- S/M/L 尺寸切换（Pro Tools 等无法拖拽缩放的宿主用） ---- */
+    sizeSelector = std::make_unique<SizeSelector>();
+    sizeSelector->onPick = [this] (int idx)
+    {
+        uiSizeIdx = idx;
+        applyUiScale (uiScales[idx]);
+        sizeSelector->setActive (idx);
+    };
+    sizeSelector->setActive (uiSizeIdx);
+    canvas.addAndMakeVisible (*sizeSelector);
+
     refreshMode();
 
     /* 一切就绪后才允许设置尺寸（触发首次 resized()） */
-    setSize (int (unitWidth * 0.7f), int (unitHeight * 0.7f));   // 默认开窗口缩小 30%
+    setSize (int (unitWidth * uiScales[uiSizeIdx]),   // 默认开窗口 = 中窗 (M, 0.8×)
+             int (unitHeight * uiScales[uiSizeIdx]));
     startTimerHz (24);
 }
 
@@ -299,6 +315,10 @@ void FusionEQAudioProcessorEditor::timerCallback()
         if (auto* parent = getParentComponent())
             if (parent->getWidth() != getWidth() || parent->getHeight() != getHeight())
                 setSize (parent->getWidth(), parent->getHeight());
+
+        /* 稳定态：高亮跟随实际 uiScale（拖拽缩放或宿主钳位后纠正 S/M/L 指示） */
+        if (sizeSelector != nullptr)
+            sizeSelector->setActive (bestSizeIndex (uiScale));
     }
 
     if (processor.getMode() != lastMode)
@@ -381,6 +401,10 @@ void FusionEQAudioProcessorEditor::refreshMode()
         outKnob->setDarkPanel (darkUI);
     osButton.setColour (juce::TextButton::buttonOnColourId,
                         darkUI ? accent : juce::Colour (0xff3a6fd8));
+
+    /* S/M/L 尺寸控件：高亮色跟随当前模式强调色 */
+    if (sizeSelector != nullptr)
+        sizeSelector->setAccent (accent);
 
     /* Pultec 模块条带：只在温润模式显示；温润模式无低切（原机无此功能）
        低频模块 = BOOST/ATTEN/CPS；高频模块 = BOOST/BANDWIDTH/KCS；ATTEN SEL = 独立板块 */
@@ -1126,6 +1150,37 @@ void FusionEQAudioProcessorEditor::paint (juce::Graphics& g)
     }
 }
 
+/* ============================ 尺寸切换 ============================ */
+void FusionEQAudioProcessorEditor::applyUiScale (float target)
+{
+    if (target <= 0.01f)
+        return;
+
+    /* 用当前【实际逻辑高度】反推目标物理尺寸：保留频谱展开/收起态，
+       不强行把收起的小窗撑回满高。约束器比例先同步到该逻辑高，
+       再 setSize —— 与频谱动画同一套逻辑，避免约束器反向算宽露出黑边。 */
+    const int logicalH = juce::jmax (120, juce::roundToInt (
+                            getHeight() / juce::jmax (0.01f, uiScale)));
+    getConstrainer()->setFixedAspectRatio (
+        (double) unitWidth / (double) logicalH);
+
+    setSize (juce::roundToInt ((float) unitWidth  * target),
+             juce::roundToInt ((float) logicalH   * target));
+    /* 稳态下的黑边自愈（timerCallback）会兜底宿主钳位造成的偏差 */
+}
+
+int FusionEQAudioProcessorEditor::bestSizeIndex (float s) const
+{
+    int   best = 0;
+    float bd   = 1.0e9f;
+    for (int i = 0; i < 3; ++i)
+    {
+        const float d = std::abs (s - uiScales[i]);
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+
 /* ============================ 布局 ============================ */
 void FusionEQAudioProcessorEditor::resized()
 {
@@ -1276,6 +1331,10 @@ void FusionEQAudioProcessorEditor::resized()
         outKnob->setBounds (foot.getX() + 132, foot.getY() + 12, 74, 54);
 
     osButton.setBounds (foot.getX() + 226, foot.getY() + 22, 138, 32);
+
+    /* S/M/L 尺寸切换：底栏右端（Pro Tools 等无法拖拽缩放的宿主用） */
+    if (sizeSelector != nullptr)
+        sizeSelector->setBounds (foot.getRight() - 92, foot.getY() + 22, 92, 32);
 
     /* 机架隐藏 = 频谱扩展（仅干净模式可用）：与顶栏收频谱箭头反向，且与它同一竖直中线 */
     rackToggle.setBounds (scopeToggle.getX(), foot.getY() + 25, 36, 26);
