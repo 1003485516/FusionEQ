@@ -763,8 +763,15 @@ void FusionEQAudioProcessor::updateBandCoefficients (int bandIndex)
         }
 
         if (b.slopeHas1st)
+        {
+            /* 奇数阶补的一阶节：低切=高通，高切=低通。
+               原实现写死 OnePoleHP（高通），导致高切奇数档（6/18/30 dB/oct）
+               实际变成高通 / 带通 —— 即用户看到的"高切模式画出来是低切线条"且声音也错。 */
+            auto opc = isHp ? Coeffs::makeFirstOrderHighPass (sr, fc)
+                            : Coeffs::makeFirstOrderLowPass  (sr, fc);
             for (auto& op : b.slopeFirst)
-                op.setCutoff ((double) fc, sr);
+                op.coefficients = opc;
+        }
     }
 }
 
@@ -1903,12 +1910,13 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
            （sec2 / has1 / qMain 已在上面算好。） */
         if (sec2 == 0 && has1)
         {
-            /* 6 dB/oct：只有一阶节，主节是恒等旁通 → 直接算一阶的幅度 */
-            auto onePole = Fusion::OnePoleHP();
-            onePole.setCutoff ((double) fc, sr);
-
-            for (int i = 0; i < curvePoints; ++i)
-                tmp[(size_t) i] = onePole.getMagnitudeForFrequency (freqs[(size_t) i], sr);
+            /* 6 dB/oct：只有一阶节，主节是恒等旁通 → 直接算一阶的幅度。
+               低切=高通，高切=低通（原写死 OnePoleHP 高通，导致高切画成低切线条）。 */
+            auto opc = (type == (int) Fusion::BandType::LowCut)
+                           ? Coeffs::makeFirstOrderHighPass (sr, fc)
+                           : Coeffs::makeFirstOrderLowPass  (sr, fc);
+            opc->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
+                                                (size_t) curvePoints, sr);
         }
         else
         {
@@ -1925,11 +1933,14 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
 
             if (has1)
             {
-                Fusion::OnePoleHP onePole;
-                onePole.setCutoff ((double) fc, sr);
-
+                /* 奇数阶补的一阶节：低切=高通，高切=低通（原写死 OnePoleHP 高通）。 */
+                auto opc = (type == (int) Fusion::BandType::LowCut)
+                               ? Coeffs::makeFirstOrderHighPass (sr, fc)
+                               : Coeffs::makeFirstOrderLowPass  (sr, fc);
+                opc->getMagnitudeForFrequencyArray (freqs.data(), tmp2.data(),
+                                                    (size_t) curvePoints, sr);
                 for (int i = 0; i < curvePoints; ++i)
-                    tmp[(size_t) i] *= onePole.getMagnitudeForFrequency (freqs[(size_t) i], sr);
+                    tmp[(size_t) i] *= tmp2[(size_t) i];
             }
         }
 

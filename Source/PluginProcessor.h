@@ -152,7 +152,7 @@ private:
            附加二阶节用 Butterworth 梯形 Q（见 cutSlopeQ）—— 叠到 16 节时，
            若一律用 0.7071 会在截止点堆出巨大共振隆起。 */
         std::array<std::array<juce::dsp::IIR::Filter<float>, 2>, 15> slopeFilters {};  // [节-1][ch]
-        std::array<Fusion::OnePoleHP, 2>                 slopeFirst {};  // [ch] 补的 6 dB/oct 一阶节
+        std::array<juce::dsp::IIR::Filter<float>, 2>     slopeFirst {};  // [ch] 补的 6 dB/oct 一阶节（高切=低通 / 低切=高通）
         int   slopeSec2   = 0;      // 二阶级数（含主节）0..16
         bool  slopeHas1st = false;  // 是否额外补一阶节
         float slopeDb     = 6.0f;   // 当前档位（dB/oct）
