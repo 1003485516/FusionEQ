@@ -8,6 +8,7 @@
 #
 #  产物：
 #    - FusionEQ-1.0.0-macOS.dmg（通用二进制 x86_64 + arm64，拖拽式安装盘）
+#    - FusionEQ-1.0.0-macOS.pkg（通用二进制，AU + AAX + VST3 + Standalone，含系统目录安装位置）
 #    - 在 Actions 的 "Artifacts" 里下载，或在打 tag 时可在 Release 中下载
 #
 #  签名 / 公证（可选，强烈建议用于正式分发）：
@@ -56,7 +57,7 @@ env:
 
 jobs:
   build-macos:
-    name: macOS Universal (VST3 + AU + Standalone)
+    name: macOS Universal (VST3 + AU + AAX + Standalone)
     runs-on: macos-14          # ARM runner，可交叉编译 x86_64，产出通用二进制
     steps:
       - name: Checkout
@@ -206,6 +207,17 @@ jobs:
       - name: Package .dmg
         run: ./installer/make_dmg.sh
 
+      # =====================================================================
+      #  打包 pkg（AU + AAX + VST3 + Standalone，带系统目录安装位置）
+      #  - MACOS_INSTALLER_IDENTITY 为空时跳过 productsign（保留未签名 PKG）
+      #  - KEYCHAIN_PATH 由「Import Apple signing certificate」步骤注入环境变量
+      # =====================================================================
+      - name: Package .pkg
+        env:
+          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: ./installer/make_pkg.sh
+
       # ---- 签名 dmg（如已配置证书）----
       - name: Codesign .dmg
         env:
@@ -252,13 +264,15 @@ jobs:
           cat "$DMG.sha256"
 
       # ---- 上传产物 ----
-      - name: Upload artifact (dmg + checksum)
+      - name: Upload artifact (dmg + pkg + checksums)
         uses: actions/upload-artifact@v4
         with:
           name: FusionEQ-macOS
           path: |
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg.sha256
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg.sha256
           if-no-files-found: error
 
       # ---- 打 tag 时同时发到 Release ----
@@ -269,5 +283,7 @@ jobs:
           files: |
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg.sha256
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg
+            FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
