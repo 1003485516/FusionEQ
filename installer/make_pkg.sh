@@ -8,8 +8,10 @@
 #        App  -> /Applications
 #  依赖: pkgbuild / productbuild（macOS 自带，Xcode CLT）
 #  可选签名: 设置 MACOS_INSTALLER_IDENTITY + KEYCHAIN_PATH 时自动 productsign
+#
+#  注意：macOS 自带 bash 为 3.2，不支持关联数组(declare -A)，
+#        故全程使用 case 语句 + 普通数组，保证兼容。
 # ===========================================================================
-# 只用 set -uo pipefail，不用 set -e —— 避免 find 等命令非零退出时静默退出。
 set -uo pipefail
 
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,6 +27,38 @@ VERSION="${VERSION:-1.0.0}"
 
 PKG="$PROJ/FusionEQ-${VERSION}-macOS.pkg"
 
+# ---- 各格式的 扩展名 / 安装位置 / 组件包标识（bash 3.2 兼容：用 case）----
+ext_of() {
+    case "$1" in
+        AU)         echo "component" ;;
+        AAX)        echo "aaxplugin" ;;
+        VST3)       echo "vst3" ;;
+        Standalone) echo "app" ;;
+        *)          echo "" ;;
+    esac
+}
+loc_of() {
+    case "$1" in
+        AU)         echo "/Library/Audio/Plug-Ins/Components" ;;
+        AAX)        echo "/Library/Application Support/Avid/Audio/Plug-Ins" ;;
+        VST3)       echo "/Library/Audio/Plug-Ins/VST3" ;;
+        Standalone) echo "/Applications" ;;
+        *)          echo "" ;;
+    esac
+}
+id_of() {
+    case "$1" in
+        AU)         echo "com.ohaudio.fusioneq.au" ;;
+        AAX)        echo "com.ohaudio.fusioneq.aax" ;;
+        VST3)       echo "com.ohaudio.fusioneq.vst3" ;;
+        Standalone) echo "com.ohaudio.fusioneq.standalone" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# 普通索引数组（bash 3.2 完全支持）
+FMTS=(AU AAX VST3 Standalone)
+
 # ---- 定位构建产物目录 ----
 BUILD=""
 for CAND in "$PROJ/build_mac" "$PROJ/build"; do
@@ -37,24 +71,6 @@ fi
 ART="$BUILD/FusionEQ_artefacts/Release"
 echo "[*] 产物目录: $ART"
 
-# ---- 各格式：扩展名 / 安装位置 / 组件包标识 ----
-declare -a FMTS=(AU AAX VST3 Standalone)
-declare -A EXT=(
-  [AU]="component" [AAX]="aaxplugin" [VST3]="vst3" [Standalone]="app"
-)
-declare -A LOC=(
-  [AU]="/Library/Audio/Plug-Ins/Components"
-  [AAX]="/Library/Application Support/Avid/Audio/Plug-Ins"
-  [VST3]="/Library/Audio/Plug-Ins/VST3"
-  [Standalone]="/Applications"
-)
-declare -A ID=(
-  [AU]="com.ohaudio.fusioneq.au"
-  [AAX]="com.ohaudio.fusioneq.aax"
-  [VST3]="com.ohaudio.fusioneq.vst3"
-  [Standalone]="com.ohaudio.fusioneq.standalone"
-)
-
 PKGDIR="$BUILD/pkg_components"
 rm -rf "$PKGDIR"
 mkdir -p "$PKGDIR"
@@ -62,7 +78,10 @@ mkdir -p "$PKGDIR"
 PKGLIST=()
 MISSING=()
 for F in "${FMTS[@]}"; do
-    SRC="$ART/$F/$APP_NAME.${EXT[$F]}"
+    EXT="$(ext_of "$F")"
+    LOC="$(loc_of "$F")"
+    ID="$(id_of "$F")"
+    SRC="$ART/$F/$APP_NAME.$EXT"
     if [ ! -e "$SRC" ]; then
         MISSING+=("$F")
         echo "[!] 未找到 $F 产物: $SRC"
@@ -75,18 +94,18 @@ for F in "${FMTS[@]}"; do
     rm -rf "$STAGE"
     mkdir -p "$STAGE"
     cp -R "$SRC" "$STAGE/"
-    sudo chown -R root:wheel "$STAGE/$APP_NAME.${EXT[$F]}" 2>/dev/null || \
+    sudo chown -R root:wheel "$STAGE/$APP_NAME.$EXT" 2>/dev/null || \
         echo "    [!] sudo chown 失败（非致命），所有权将沿用构建用户"
 
     OUT="$PKGDIR/FusionEQ-${F}.pkg"
-    if pkgbuild --component "$STAGE/$APP_NAME.${EXT[$F]}" \
-                --install-location "${LOC[$F]}" \
+    if pkgbuild --component "$STAGE/$APP_NAME.$EXT" \
+                --install-location "$LOC" \
                 --ownership preserve \
-                --identifier "${ID[$F]}" \
+                --identifier "$ID" \
                 --version "$VERSION" \
                 "$OUT"; then
         PKGLIST+=("$OUT")
-        echo "    [+] 组件包 -> ${LOC[$F]}"
+        echo "    [+] 组件包 -> $LOC"
     else
         echo "[X] 组件包构建失败: $F"
         exit 1
@@ -99,16 +118,22 @@ if [ ${#PKGLIST[@]} -eq 0 ]; then
 fi
 
 # 用户明确要 AU + AAX，缺失则醒目提示
-for R in AU AAX; do
-    if [[ " ${MISSING[*]:-} " == *" $R "* ]]; then
-        echo
-        echo "[!!] 警告：请求的 $R 格式缺失，PKG 中将不含 $R。"
-        if [ "$R" = "AAX" ]; then
-            echo "      AAX 需要配置 AAX SDK 私有仓库 Secret（AAX_SDK_REPO + AAX_SDK_PAT）。"
+if [ ${#MISSING[@]} -gt 0 ]; then
+    for R in AU AAX; do
+        FOUND=0
+        for M in "${MISSING[@]}"; do
+            if [ "$M" = "$R" ]; then FOUND=1; break; fi
+        done
+        if [ "$FOUND" -eq 1 ]; then
+            echo
+            echo "[!!] 警告：请求的 $R 格式缺失，PKG 中将不含 $R。"
+            if [ "$R" = "AAX" ]; then
+                echo "      AAX 需要配置 AAX SDK 私有仓库 Secret（AAX_SDK_REPO + AAX_SDK_PAT）。"
+            fi
+            echo
         fi
-        echo
-    fi
-done
+    done
+fi
 
 # ---- 合并为单一产品包 ----
 ARGS=()
