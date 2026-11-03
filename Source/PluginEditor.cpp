@@ -1020,21 +1020,24 @@ void FusionEQAudioProcessorEditor::paint (juce::Graphics& g)
         const float x0 = bx + brandH * aspect + 12.0f;
         const float logoTopY = 4.0f;
 
+        /* 改为 drawSingleLineText 直绘（与下方副标题同一已验证渲染路径）。
+           原 AttributedString/TextLayout 路径在 JUCE 中走 Font 自身的 look-and-feel
+           （该路径为 null），会绕过 Graphics/Editor 的 FusionLook 字体映射，
+           导致 "Segoe UI Light" 无法解析 —— 在部分宿主（AAX / Pro Tools 的 GDI
+           上下文）下落到错误字形表而乱码（FUSION EQ → CR∏LK BN）。drawSingleLineText
+           走 Editor 的 FusionLook，能正确映射到微软雅黑 / 苹方，跨宿主一致。 */
         auto logoFont = juce::Font (juce::Font (FUSION_LOGO_FONT, 31.0f, juce::Font::plain))
                             .withExtraKerningFactor (0.16f);
-
-        juce::AttributedString as;
-        as.setJustification (juce::Justification::centredLeft);
-        /* 硬件模式顶栏转深：字标转浅色刻字（EQ 保留品牌蓝，稍提亮） */
-        as.append ("FUSION ", logoFont, heavySkin ? juce::Colour (0xffd5dbe1)
-                                                  : juce::Colour (0xff3a444e));
-        as.append ("EQ",     logoFont, heavySkin ? juce::Colour (0xff2fa8e0)
-                                                 : juce::Colour (0xff0e9bd6));
-
-        juce::TextLayout tl;
-        tl.createLayout (as, 10000.0f);
-        const float logoH = tl.getHeight();   // 实测文字高度，规避各平台字体度量差异
-        tl.draw (g, juce::Rectangle<float> (x0, logoTopY, tl.getWidth() + 4.0f, logoH));
+        g.setFont (logoFont);
+        const float logoH   = logoFont.getHeight();           // 实测文字高度，规避平台度量差异
+        const float logoBaseY = logoTopY + logoFont.getAscent();
+        g.setColour (heavySkin ? juce::Colour (0xffd5dbe1)   // 硬件模式：浅灰刻字
+                               : juce::Colour (0xff3a444e));
+        g.drawSingleLineText ("FUSION ", (int) x0, (int) logoBaseY);
+        const float eqX = x0 + logoFont.getStringWidth ("FUSION ");
+        g.setColour (heavySkin ? juce::Colour (0xff2fa8e0)   // EQ 保留品牌蓝，稍提亮
+                               : juce::Colour (0xff0e9bd6));
+        g.drawSingleLineText ("EQ", (int) eqX, (int) logoBaseY);
 
         /* 副标题：固定适中字距；基线放在字标实测下沿 + 间隙 + 升部，
            彻底杜绝 macOS 上字标与副标题重叠（不再依赖固定像素值）。 */
