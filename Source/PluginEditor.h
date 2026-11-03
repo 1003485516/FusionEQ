@@ -72,7 +72,14 @@ public:
            绕过了苹方设置，导致默认字体文本（旋钮标签 / 模式按钮 / 条带标题）
            的中文全部渲染成豆腐块 —— 此即 1.0.3 mac 版乱码的真正根因。 */
         if (name == juce::Font::getDefaultSansSerifFontName())
-            return LookAndFeel_V4::getTypefaceForFont (f);
+        {
+            /* 默认无衬线（拉丁/中文混排）显式交回苹方：LookAndFeel_V4 自带默认字体
+               无 CJK 字形，直接回落到它会让中文（模式名 / 说明 / 条带标题）乱码；
+               显式指定 PingFang SC 才能确保中文可渲染，外观与系统一致。 */
+            auto f2 (f);
+            f2.setTypefaceName ("PingFang SC");
+            return juce::Font::getDefaultTypefaceForFont (f2);
+        }
 
         /* Windows 专用字体名（Segoe 系列 / 雅黑 / Bahnschrift）在 macOS 不存在；
            这些名字只可能被中文文本请求，故映射到带 CJK 字形的苹方
@@ -95,7 +102,14 @@ public:
         auto f = LookAndFeel_V4::getTextButtonFont (b, height);
 
         if ((int) b.getProperties().getWithDefault ("modeBtn", 0) != 0)
+        {
             f.setHeight (15.0f);
+            /* 模式按钮显示中文模式名（干净 / 通透 / 硬朗 等）。显式指定跨平台 CJK 字体名，
+               确保中文绝不落到无 CJK 字形的字体而出乱码：Windows 上 Microsoft YaHei 是系统
+               自带中文字体；macOS 上该名命中 getTypefaceForFont 的回退规则映射到苹方，
+               二者均正确渲染。 */
+            f.setTypefaceName ("Microsoft YaHei");
+        }
 
         auto* fh = b.getProperties().getVarPointer ("fontH");
         if (fh != nullptr)
