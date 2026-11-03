@@ -1242,7 +1242,14 @@ float SpectrumDisplay::nodeYOf (int b) const
         const auto t = (Fusion::BandType) processor.getBandType (b);
 
         if (t == Fusion::BandType::LowCut || t == Fusion::BandType::HighCut)
+        {
+            /* 6 dB/oct 是一阶节：无共振极点，Q 拖拽完全失效。
+               此时把节点贴 0 dB，避免"蓝点浮在上面、曲线却不动"的误导。 */
+            if (processor.getBandSlope (b) <= 6.001f)
+                return yOfEq (0.0f);
+
             return yOfEq (cutQToDispDb (processor.getBandQ (b)));
+        }
     }
 
     return yOfEq (on ? processor.getBandGain (b) : 0.0f);

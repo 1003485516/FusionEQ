@@ -195,7 +195,10 @@ FusionEQAudioProcessor::createParameterLayout()
         /* 低切 / 高切段斜率：离散档位 6~192 dB/oct（滚轮逐档，末档 BRICKWALL） */
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             IDs::bSlope (i), n + "Slope",
-            juce::NormalisableRange<float> (6.0f, 192.0f, 0.0f, 0.05f), 6.0f));
+            /* 默认 12 dB/oct：低切/高切新建段即带一个可共振的二阶节，
+               竖直拖拽(共振 Q)立刻有可见峰值，与低切完全对称。
+               6 dB/oct 仍可选（一阶节、无共振），但默认给更有用的二阶。 */
+            juce::NormalisableRange<float> (6.0f, 192.0f, 0.0f, 0.05f), 12.0f));
 
         /* 动态压缩（F6 式每段动态 EQ，仅干净模式接入信号链）：
            阈值 / 作用范围 / 启动 / 释放；默认关闭 */
