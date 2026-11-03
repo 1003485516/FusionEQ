@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FusionEQ VERSION 1.0.6)
+project(FusionEQ VERSION 1.0.7)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -107,7 +107,7 @@ message(STATUS "插件格式 FORMATS = ${FUSION_FORMATS}")
 # 插件目标
 # ---------------------------------------------------------------------------
 juce_add_plugin(FusionEQ
-    COMPANY_NAME          "OH Audio"
+    COMPANY_NAME          "OH AUDIO"
     BUNDLE_ID             "com.ohaudio.fusioneq"
     PLUGIN_MANUFACTURER_CODE  OHAu
     PLUGIN_CODE            FuEQ
