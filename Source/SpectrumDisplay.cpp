@@ -55,19 +55,13 @@ SpectrumDisplay::SpectrumDisplay (FusionEQAudioProcessor& p) : processor (p)
 
     /* 缓存哈希用的参数指针：computeStateHash() 每秒跑 60 次，
        若每次都现拼 "bandNxxx" 字符串再查表，会有上百次 String 分配/秒的
-       无谓开销（菜单弹出时这些开销直接变成菜单高亮的延迟）。 */
-    hashHpfOn = processor.apvts.getRawParameterValue (IDs::hpfOn);
-
-    for (int i = 0; i < Fusion::numBands; ++i)
-    {
-        hashParams[(size_t) i][0] = processor.apvts.getRawParameterValue (IDs::bOn    (i));
-        hashParams[(size_t) i][1] = processor.apvts.getRawParameterValue (IDs::bType  (i));
-        hashParams[(size_t) i][2] = processor.apvts.getRawParameterValue (IDs::bFreq  (i));
-        hashParams[(size_t) i][3] = processor.apvts.getRawParameterValue (IDs::bGain  (i));
-        hashParams[(size_t) i][4] = processor.apvts.getRawParameterValue (IDs::bQ     (i));
-        hashParams[(size_t) i][5] = processor.apvts.getRawParameterValue (IDs::bSlope (i));
-        hashParams[(size_t) i][6] = processor.apvts.getRawParameterValue (IDs::bChan  (i));
-    }
+       无谓开销（菜单弹出时这些开销直接变成菜单高亮的延迟）。
+       这里把**全部**参数指针缓存下来：曲线受哪些参数影响由参数表决定，
+       手工维护清单一定会漏（漏一个 = 那个旋钮拧了曲线不动）。 */
+    for (auto* p : processor.apvts.processor.getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            if (auto* raw = processor.apvts.getRawParameterValue (rp->paramID))
+                hashParams.push_back (raw);
 }
 
 SpectrumDisplay::~SpectrumDisplay() { stopTimer(); }
@@ -111,15 +105,12 @@ juce::uint64 SpectrumDisplay::computeStateHash() const
     };
 
     mix ((juce::int64) processor.getMode());
-    mix (q (load (hashHpfOn), 10.0f));
 
-    /* 顺序必须与旧实现一致（每次改动的哈希值不要求兼容，只要求稳定） */
-    static constexpr float scales[7] = { 10.0f, 10.0f, 100.0f, 100.0f,
-                                         100.0f, 100.0f, 10.0f };
-
-    for (int i = 0; i < Fusion::numBands; ++i)
-        for (int k = 0; k < 7; ++k)
-            mix (q (load (hashParams[(size_t) i][(size_t) k]), scales[k]));
+    /* 全部参数都参与哈希（见头文件里 hashParams 的注释）。
+       量化到 1/1000：频点 20k×1000 = 2e7，int64 内绰绰有余；
+       开关/档位取整后同样稳定，不会因浮点抖动每帧重算。 */
+    for (auto* p : hashParams)
+        mix (q (load (p), 1000.0f));
 
     mix ((juce::int64) (highlightBand + 8));
     mix ((juce::int64) (activeBand + 8));

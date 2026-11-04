@@ -195,9 +195,13 @@ private:
     bool         staticDirty = true;
     bool         menuOpen = false;      // 右键菜单弹出中 → 暂停 60 Hz 刷新
 
-    /* computeStateHash 用的参数指针（构造时缓存，避免每帧重建 ID 字符串） */
-    std::atomic<float>* hashHpfOn = nullptr;
-    std::atomic<float>* hashParams[Fusion::numBands][7] {};
+    /* computeStateHash 用的参数指针（构造时缓存，避免每帧重建 ID 字符串）。
+       ⚠️ 必须是**全部**参数，不能只挑 6 个频段 + 低切开关：
+       曲线的形状还受 SSL FILTER（filtHp/filtLp）、1073 HPF（hpfFreq/hpfSlope）、
+       215L 开关、Pultec 全套（plLowBoost/plBand/plHighFreq…）影响。
+       漏掉任何一个 → 拧那个旋钮时哈希不变 → 曲线永远不重算，
+       在 Logic（空闲不跑音频线程）里表现为"这个模式怎么调曲线都不动"。 */
+    std::vector<const std::atomic<float>*> hashParams;
     /* lastStateHash 记录的是"曲线实际按哪一版参数画出来"的哈希。
        ⚠️ 只能在真正重算过曲线之后更新 —— 否则背景层因换肤/高亮重绘时
        提前把新哈希记下，曲线就再也不会被刷新（宿主停止播放时尤其明显：

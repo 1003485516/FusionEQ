@@ -68,8 +68,12 @@ void FusionEQAudioProcessor::initModeStates()
                该段没有共振峰 → 竖直拖拽（共振 Q）完全没反应，
                节点还会被钉在 0 dB 线上，看起来"频点拖不动/不跟 gain"。*/
             st.slope[b] = 12.0f;
-            /* SSL 原版无段开关（常开）；其它模式与 bOn 参数默认一致 = 关 */
-            st.on[b]   = ((Fusion::Mode) m) == Fusion::Mode::SSL;
+            /* 频段默认全部接通：
+               SSL 原版无段开关（常开）；1073 / 550L / Massive Passive 这类
+               硬件模式也没有"段开关"，增益钮归零就是平直。
+               留 OFF 会导致第一次切进这些模式时所有 GAIN 钮都没反应
+               （曲线不动、也听不出变化），必须先在机架上找到 ON 才行。 */
+            st.on[b]   = true;
         }
 
         st.hpfOn    = false;   // 硬朗 HP/LP 默认关闭：不处理，拧到档位再手动打开
@@ -559,37 +563,55 @@ void FusionEQAudioProcessor::rebuildAir()
 /* Pultec EQP-1A：boost shelf 与 atten shelf 独立，可同时作用（low-end trick）。
    atten 转折点故意偏移（低频更低、高频更高），叠加时形成 EQP-1A 标志性的
    "峰 + 浅谷"曲线。增益刻度仿原机：0-10 拨盘 ≈ 0 到 ±13~16 dB。 */
-void FusionEQAudioProcessor::rebuildPultec()
+/* 纯函数：只依据"参数值"生成 Pultec 四组 shelf 系数，不碰任何 DSP 成员。
+   音频线程（rebuildPultec，写滤波器）与曲线快照（updateResponseSnapshot）
+   共用同一套计算 —— 后者因此完全自包含：宿主空闲、音频线程不跑时，
+   拧 Pultec 旋钮曲线也会立刻跟着变。 */
+static std::array<Coeffs::Ptr, 4> makePultecCoeffs (double sr,
+                                                    int lfi, int hfi, float bandV,
+                                                    float lb, float la, float hb,
+                                                    float haAmt, int hai)
 {
-    static constexpr float cps[4]  = { 20.0f, 30.0f, 60.0f, 100.0f };
-    static constexpr float kcs[5]  = { 5000.0f, 8000.0f, 10000.0f, 12000.0f, 16000.0f };
+    static constexpr float cps[4]    = { 20.0f, 30.0f, 60.0f, 100.0f };
+    static constexpr float kcs[5]    = { 5000.0f, 8000.0f, 10000.0f, 12000.0f, 16000.0f };
     static constexpr float attenK[3] = { 5000.0f, 10000.0f, 20000.0f };   // ATTEN SEL 5/10/20 KC
 
-    const int  lfi  = juce::jlimit (0, 3, plLowFreqI);
-    const int  hfi  = juce::jlimit (0, 4, plHighFreqI);
-    const float bandV = juce::jlimit (0.0f, 1.0f, plBandV);   // 0=BROAD 1=SHARP 线性插值
-
-    const float lb = juce::jlimit (0.0f, 10.0f, plLowBoostV);
-    const float la = juce::jlimit (0.0f, 10.0f, plLowAttenV);
-    const float hb = juce::jlimit (0.0f, 10.0f, plHighBoostV);
+    lfi   = juce::jlimit (0, 3, lfi);
+    hfi   = juce::jlimit (0, 4, hfi);
+    hai   = juce::jlimit (0, 2, hai);
+    bandV = juce::jlimit (0.0f, 1.0f, bandV);
+    lb    = juce::jlimit (0.0f, 10.0f, lb);
+    la    = juce::jlimit (0.0f, 10.0f, la);
+    hb    = juce::jlimit (0.0f, 10.0f, hb);
+    haAmt = juce::jlimit (0.0f, 10.0f, haAmt);
 
     const float lbDb = lb * 1.4f;                    // 满程 +14 dB
     const float laDb = la * 1.1f;                    // 满程 -11 dB
     const float hbDb = hb * 1.4f;
-    const float haDb = juce::jlimit (0.0f, 10.0f, plHighAttenAmtV) * 1.6f;   // 满程 -16 dB
-    const int   hai  = juce::jlimit (0, 2, plHighAttenI);                    // 转折频率 5/10/20 KC
+    const float haDb = haAmt * 1.6f;                 // 满程 -16 dB
 
     const float lbQ = 0.55f + 0.09f * lb;            // boost 越大峰越突出
     const float hbQ = 0.5f + 0.7f * bandV;
 
-    plCoeffs[(size_t) 0] = Coeffs::makeLowShelf (currentSampleRate, cps[lfi], lbQ,
-                                                 juce::Decibels::decibelsToGain (lbDb));
-    plCoeffs[(size_t) 1] = Coeffs::makeLowShelf (currentSampleRate, cps[lfi] * 0.75f, 0.707f,
-                                                 juce::Decibels::decibelsToGain (-laDb));
-    plCoeffs[(size_t) 2] = Coeffs::makeHighShelf (currentSampleRate, kcs[hfi], hbQ,
-                                                  juce::Decibels::decibelsToGain (hbDb));
-    plCoeffs[(size_t) 3] = Coeffs::makeHighShelf (currentSampleRate, attenK[hai], 0.707f,
-                                                  juce::Decibels::decibelsToGain (-haDb));
+    std::array<Coeffs::Ptr, 4> out;
+
+    out[(size_t) 0] = Coeffs::makeLowShelf (sr, cps[lfi], lbQ,
+                                            juce::Decibels::decibelsToGain (lbDb));
+    out[(size_t) 1] = Coeffs::makeLowShelf (sr, cps[lfi] * 0.75f, 0.707f,
+                                            juce::Decibels::decibelsToGain (-laDb));
+    out[(size_t) 2] = Coeffs::makeHighShelf (sr, kcs[hfi], hbQ,
+                                             juce::Decibels::decibelsToGain (hbDb));
+    out[(size_t) 3] = Coeffs::makeHighShelf (sr, attenK[hai], 0.707f,
+                                             juce::Decibels::decibelsToGain (-haDb));
+
+    return out;
+}
+
+void FusionEQAudioProcessor::rebuildPultec()
+{
+    plCoeffs = makePultecCoeffs (currentSampleRate, plLowFreqI, plHighFreqI, plBandV,
+                                 plLowBoostV, plLowAttenV, plHighBoostV,
+                                 plHighAttenAmtV, plHighAttenI);
 
     for (int k = 0; k < 4; ++k)
     {
@@ -1723,17 +1745,35 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
         mag[(size_t) i]   = 1.0;
     }
 
+    /* --- 滤波器/模式专属参数：全部现从 APVTS 读 ---
+       绝不能读 hpfFreqHz / filtHpHz / filtLpHz / hpfOn / lpOn 这些成员：
+       它们只在 processBlock 里同步，宿主（Logic）空闲不跑音频线程时永远是
+       上一次处理留下的旧值 —— 拧 SSL FILTER、1073 HPF、215L、Pultec 旋钮
+       曲线就会一动不动。 */
+    const auto pv = [this] (const char* id)
+    {
+        const auto* p = apvts.getRawParameterValue (id);
+        return p != nullptr ? p->load() : 0.0f;
+    };
+
+    const bool  hpfSw   = pv (IDs::hpfOn)  > 0.5f;
+    const bool  lpSw    = pv (IDs::lpOn)   > 0.5f;
+    const int   hpfStep = juce::jlimit (0, 3, juce::roundToInt (pv (IDs::hpfFreq)));
+    const float hpfHz   = hpfStep == 0 ? 50.0f : hpfStep == 2 ? 160.0f
+                        : hpfStep == 3 ? 300.0f : 80.0f;
+    const float fHp     = juce::jlimit (20.0f, 2000.0f,  pv (IDs::filtHp));
+    const float fLp     = juce::jlimit (200.0f, 20000.0f, pv (IDs::filtLp));
+
     /* --- 低切：纯 Butterworth 级联（斜率）+ 性格节（模式质感，与斜率无关）
        Pultec 三段式无低切（与音频链一致） --- */
-    if (apvts.getRawParameterValue (IDs::hpfOn)->load() > 0.5f
-        && mode != Fusion::Mode::Pultec)
+    if (hpfSw && mode != Fusion::Mode::Pultec)
     {
         const int stages = 1 + juce::jlimit (0, 2, juce::roundToInt (
             apvts.getRawParameterValue (IDs::hpfSlope)->load()));
 
         for (int s = 0; s < stages; ++s)
         {
-            const auto hpfC = Coeffs::makeHighPass (sr, hpfFreqHz,
+            const auto hpfC = Coeffs::makeHighPass (sr, hpfHz,
                                                     hpfSectionQ (s, stages));
             if (hpfC == nullptr)
                 break;
@@ -1744,7 +1784,7 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
                 mag[(size_t) i] *= tmp[(size_t) i];
         }
 
-        if (auto chC = makeHpfCharacter (sr, m.hpfQ, hpfFreqHz))
+        if (auto chC = makeHpfCharacter (sr, m.hpfQ, hpfHz))
         {
             chC->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                 (size_t) curvePoints, sr);
@@ -1757,8 +1797,8 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
        硬朗 215L：同一对系数，HP/LP 开关独立门控，全部档位有效 --- */
     if (mode == Fusion::Mode::API)
     {
-        if (hpfOn)
-            if (auto hpC = Coeffs::makeHighPass (sr, filtHpHz, 0.7071f))
+        if (hpfSw)
+            if (auto hpC = Coeffs::makeHighPass (sr, fHp, 0.7071f))
             {
                 hpC->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                     (size_t) curvePoints, sr);
@@ -1766,8 +1806,8 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
                     mag[(size_t) i] *= tmp[(size_t) i];
             }
 
-        if (lpOn)
-            if (auto lpC = Coeffs::makeLowPass (sr, filtLpHz, 0.7071f))
+        if (lpSw)
+            if (auto lpC = Coeffs::makeLowPass (sr, fLp, 0.7071f))
             {
                 lpC->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                     (size_t) curvePoints, sr);
@@ -1777,8 +1817,8 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
     }
     else if (mode == Fusion::Mode::SSL)
     {
-        if (filtHpHz > Fusion::fMin + 0.5f)
-            if (auto hpC = Coeffs::makeHighPass (sr, filtHpHz, 0.7071f))
+        if (fHp > Fusion::fMin + 0.5f)
+            if (auto hpC = Coeffs::makeHighPass (sr, fHp, 0.7071f))
             {
             hpC->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                 (size_t) curvePoints, sr);
@@ -1786,8 +1826,8 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
                 mag[(size_t) i] *= tmp[(size_t) i];
         }
 
-        if (filtLpHz < 19995.0f)
-            if (auto lpC = Coeffs::makeLowPass (sr, filtLpHz, 0.7071f))
+        if (fLp < 19995.0f)
+            if (auto lpC = Coeffs::makeLowPass (sr, fLp, 0.7071f))
             {
             lpC->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                 (size_t) curvePoints, sr);
@@ -1799,8 +1839,8 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
     /* --- Manley 高/低切：HP 12 dB/oct；LP 18 dB/oct（二阶 × 一阶）；OFF = 端点 --- */
     if (mode == Fusion::Mode::Manley)
     {
-        if (filtHpHz > 20.5f)
-            if (auto hpC = Coeffs::makeHighPass (sr, filtHpHz, 0.7071f))
+        if (fHp > 20.5f)
+            if (auto hpC = Coeffs::makeHighPass (sr, fHp, 0.7071f))
             {
                 hpC->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                     (size_t) curvePoints, sr);
@@ -1808,15 +1848,15 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
                     mag[(size_t) i] *= tmp[(size_t) i];
             }
 
-        if (filtLpHz < 19995.0f)
-            if (auto lpC  = Coeffs::makeLowPass (sr, filtLpHz, 0.7071f))
+        if (fLp < 19995.0f)
+            if (auto lpC  = Coeffs::makeLowPass (sr, fLp, 0.7071f))
             {
                 lpC->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                     (size_t) curvePoints, sr);
                 for (int i = 0; i < curvePoints; ++i)
                     mag[(size_t) i] *= tmp[(size_t) i];
 
-                if (auto lp1 = Coeffs::makeFirstOrderLowPass (sr, filtLpHz))
+                if (auto lp1 = Coeffs::makeFirstOrderLowPass (sr, fLp))
                 {
                     lp1->getMagnitudeForFrequencyArray (freqs.data(), tmp.data(),
                                                         (size_t) curvePoints, sr);
@@ -1998,10 +2038,22 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
             mag[(size_t) i] *= tmp[(size_t) i];
     }
 
-    /* --- Pultec 三段（温润模式）：4 组 shelf 幅频叠加进总曲线 --- */
+    /* --- Pultec 三段（温润模式）：4 组 shelf 幅频叠加进总曲线 ---
+       系数由参数现算（makePultecCoeffs），不读音频线程的 plCoeffs：
+       宿主空闲不跑音频线程时，拧 BOOST / ATTEN / CPS / KCS 曲线也会跟着动。 */
     if (mode == Fusion::Mode::Pultec)
     {
-        for (auto& c : plCoeffs)
+        const auto coeffs = makePultecCoeffs (sr,
+            juce::roundToInt (pv (IDs::plLowFreq)),
+            juce::roundToInt (pv (IDs::plHighFreq)),
+            pv (IDs::plBand),
+            pv (IDs::plLowBoost),
+            pv (IDs::plLowAtten),
+            pv (IDs::plHighBoost),
+            pv (IDs::plHighAttenAmt),
+            juce::roundToInt (pv (IDs::plHighAtten)));
+
+        for (auto& c : coeffs)
         {
             if (c == nullptr)
                 continue;

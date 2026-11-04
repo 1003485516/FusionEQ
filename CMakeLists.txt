@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FusionEQ VERSION 1.0.13)
+project(FusionEQ VERSION 1.0.14)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
