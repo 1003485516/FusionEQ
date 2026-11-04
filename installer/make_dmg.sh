@@ -83,19 +83,62 @@ cp -R "$ART/VST3/$APP_NAME.vst3" "$STAGING/"
 [ -d "$ART/Standalone/$APP_NAME.app" ]  && cp -R "$ART/Standalone/$APP_NAME.app"  "$STAGING/"
 [ -d "$ART/AAX/$APP_NAME.aaxplugin" ]   && cp -R "$ART/AAX/$APP_NAME.aaxplugin"   "$STAGING/"
 
-# 指向系统目录的替身，方便用户拖拽安装
-ln -s /Library/Audio/Plug-Ins/VST3       "$STAGING/VST3 插件文件夹"
-ln -s /Library/Audio/Plug-Ins/Components "$STAGING/AU 插件文件夹"
-ln -s /Library/Application\ Support/Avid/Audio/Plug-Ins \
-                                         "$STAGING/AAX 插件文件夹 (Pro Tools)"
-ln -s /Applications                       "$STAGING/Applications"
-
 # ---- 生成 dmg ----
-hdiutil create -volname "Fusion EQ $VERSION" \
-    -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+# 注意：不能用 `hdiutil create -srcfolder <含指向系统目录的 symlink 的文件夹>` ——
+# hdiutil 会跟随这些 symlink 去读取 /Library、/Applications 等目标，在 CI runner
+# 上常因目标被系统锁定而报 "Resource busy"。这里改为「先建空白镜像→挂载→
+# 拷贝真实插件文件→以文件形式写入 symlink→卸载→压缩」的标准做法，symlink 直接
+# 作为文件写入镜像，hdiutil 不会去读取其指向的系统目录，彻底避开 Resource busy。
+RW_DMG="$PROJ/FusionEQ-${VERSION}-macOS-rw.dmg"
+rm -f "$RW_DMG"
+
+# 估算所需大小（暂存内容 + 余量），最小 80m
+SRC_SIZE="$(du -sm "$STAGING" 2>/dev/null | awk '{print $1}')"
+SRC_SIZE="$(( ${SRC_SIZE:-10} + 40 ))"
+[ "$SRC_SIZE" -lt 80 ] && SRC_SIZE=80
+
+hdiutil create -size "${SRC_SIZE}m" -volname "Fusion EQ $VERSION" \
+    -fs HFS+ -format UDRW "$RW_DMG"
+
+# 挂载（禁用自动打开与 Finder 浏览）
+MOUNT_INFO="$(hdiutil attach -nobrowse -noautoopen "$RW_DMG")"
+DEV="$(printf '%s\n' "$MOUNT_INFO" | awk 'NR==1{print $1}')"
+MOUNT="$(printf '%s\n' "$MOUNT_INFO" | awk 'NR==1{sub(/^[^\t ]+[ \t]+/,""); print}')"
+if [ -z "$MOUNT" ] || [ ! -d "$MOUNT" ]; then
+    echo "[X] dmg 挂载失败，挂载信息："
+    echo "$MOUNT_INFO"
+    rm -f "$RW_DMG"
+    exit 1
+fi
+
+# 拷贝真实插件文件（不依赖任何系统目录）
+cp -R "$ART/VST3/$APP_NAME.vst3" "$MOUNT/"
+[ -d "$ART/AU/$APP_NAME.component" ]    && cp -R "$ART/AU/$APP_NAME.component"    "$MOUNT/"
+[ -d "$ART/Standalone/$APP_NAME.app" ]  && cp -R "$ART/Standalone/$APP_NAME.app"  "$MOUNT/"
+[ -d "$ART/AAX/$APP_NAME.aaxplugin" ]   && cp -R "$ART/AAX/$APP_NAME.aaxplugin"   "$MOUNT/"
+
+# 以文件形式写入指向系统目录的替身（symlink），hdiutil 不会去读其目标
+ln -s /Library/Audio/Plug-Ins/VST3                   "$MOUNT/VST3 插件文件夹"
+ln -s /Library/Audio/Plug-Ins/Components             "$MOUNT/AU 插件文件夹"
+ln -s /Library/Application\ Support/Avid/Audio/Plug-Ins "$MOUNT/AAX 插件文件夹 (Pro Tools)"
+ln -s /Applications                                  "$MOUNT/Applications"
+
+# 卸载（失败则强制卸载，确保后续 convert 不被占用）
+hdiutil detach "$DEV" || hdiutil detach "$DEV" -force
+
+# 压缩为最终 dmg
+rm -f "$DMG"
+hdiutil convert "$RW_DMG" -format UDZO -o "$DMG"
+rm -f "$RW_DMG"
+
+# 失败检测：dmg 必须存在且非空，否则如实报错（不再假成功）
+if [ ! -s "$DMG" ]; then
+    echo "[X] dmg 生成失败：$DMG 不存在或为空"
+    exit 1
+fi
 
 # 清理暂存
-rm -rf "$STAGING"
+rm -rf "$STAGING" 2>/dev/null || true
 
 echo
 echo "=== 已生成: $DMG ==="

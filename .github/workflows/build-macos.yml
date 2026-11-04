@@ -264,7 +264,10 @@ jobs:
           cat "$DMG.sha256"
 
       # ---- 上传产物 ----
+      # if: always() 兜底：即便前面某步（如 SHA256）失败，只要 pkg 已生成也照常上传，
+      # 确保总能拿到可安装的包；dmg 缺失时由 if-no-files-found: error 显式报错。
       - name: Upload artifact (dmg + pkg + checksums)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: FusionEQ-macOS

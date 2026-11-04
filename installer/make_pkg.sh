@@ -161,7 +161,8 @@ fi
 # ---- SHA256 校验和 ----
 shasum -a 256 "$PKG" > "$PKG.sha256"
 
-rm -rf "$PKGDIR"
+# 暂存文件此前被 chown 为 root:wheel，普通用户删不掉，忽略错误（runner 结束即回收）
+rm -rf "$PKGDIR" 2>/dev/null || true
 
 echo
 echo "=== 已生成: $PKG ==="
