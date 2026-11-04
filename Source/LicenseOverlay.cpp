@@ -18,7 +18,7 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
     subtitleLabel.setFont (juce::Font (13.0f));
     subtitleLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
 
-    machineLabel.setFont (juce::Font ("Consolas", 12.0f, juce::Font::plain));
+    machineLabel.setFont (juce::Font (12.0f));   // 默认无衬线 → Windows 解析到微软雅黑（含中文），避免 Consolas 缺中文字形
     machineLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
 
     codeEditor.setMultiLine (false);
@@ -52,7 +52,7 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
     activatedLabel.setColour (juce::Label::textColourId, juce::Colour (kAccent));
     activatedLabel.setInterceptsMouseClicks (false, false);
 
-    badgeMachineLabel.setFont (juce::Font ("Consolas", 10.0f, juce::Font::plain));
+    badgeMachineLabel.setFont (juce::Font (10.0f));   // 默认无衬线 → 含中文
     badgeMachineLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
     badgeMachineLabel.setInterceptsMouseClicks (false, false);
 

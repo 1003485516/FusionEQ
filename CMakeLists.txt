@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FusionEQ VERSION 1.0.15)
+project(FusionEQ VERSION 1.0.16)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,18 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 if(MSVC)
     add_compile_options(/utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
+# 中文乱码根因修复（Windows / llvm-mingw Clang）：
+# 简体中文 Windows 下，llvm-mingw 默认把【窄字符串执行字符集】按系统代码页
+# (GBK/936) 处理。源码虽是 UTF-8，但中文窄字面量在二进制里被编码成 GBK；
+# JUCE 再按 UTF-8 解码 → 出现「æ‰§」式经典乱码（主界面顶栏按钮、激活面板中文
+# 全部中招）。显式强制源码输入与窄字符串执行字符集均为 UTF-8，与 MSVC /utf-8 对齐。
+# macOS 的 clang 默认即 UTF-8，加此标志无副作用。
+# ---------------------------------------------------------------------------
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR MINGW)
+    add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 # ---------------------------------------------------------------------------
