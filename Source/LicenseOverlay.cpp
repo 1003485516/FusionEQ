@@ -14,7 +14,7 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
     titleLabel.setFont (juce::Font (26.0f, juce::Font::bold));
     titleLabel.setColour (juce::Label::textColourId, juce::Colour (kText));
 
-    subtitleLabel.setText ("需要激活以继续使用", juce::dontSendNotification);
+    subtitleLabel.setText (juce::String::fromUTF8 ("需要激活以继续使用"), juce::dontSendNotification);
     subtitleLabel.setFont (juce::Font (13.0f));
     subtitleLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
 
@@ -23,7 +23,7 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
 
     codeEditor.setMultiLine (false);
     codeEditor.setReturnKeyStartsNewLine (false);
-    codeEditor.setTextToShowWhenEmpty ("请输入激活码", juce::Colour (0xff5c666f));
+    codeEditor.setTextToShowWhenEmpty (juce::String::fromUTF8 ("请输入激活码"), juce::Colour (0xff5c666f));
     codeEditor.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xfff4f6f8));
     codeEditor.setColour (juce::TextEditor::textColourId,        juce::Colour (0xff1d242b));
     codeEditor.setColour (juce::TextEditor::outlineColourId,     juce::Colour (0xff3a6fd8));
@@ -37,7 +37,7 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
     activateButton.setColour (juce::TextButton::textColourOnId,   juce::Colours::white);
     activateButton.onClick = [this]() { doActivate (codeEditor.getText()); };
 
-    buyButton.setButtonText ("前往官网购买 / 认领激活码");
+    buyButton.setButtonText (juce::String::fromUTF8 ("前往官网购买 / 认领激活码"));
     buyButton.setURL (juce::URL ("https://ohaudio.cn/account/"));
     buyButton.setColour (juce::HyperlinkButton::textColourId, juce::Colour (0xff6fb3ff));
     buyButton.setFont (juce::Font (12.5f), false);
@@ -47,7 +47,7 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
     statusLabel.setJustificationType (juce::Justification::centred);
 
     /* —— 已激活态 —— */
-    activatedLabel.setText ("已激活", juce::dontSendNotification);
+    activatedLabel.setText (juce::String::fromUTF8 ("已激活"), juce::dontSendNotification);
     activatedLabel.setFont (juce::Font (13.0f, juce::Font::bold));
     activatedLabel.setColour (juce::Label::textColourId, juce::Colour (kAccent));
     activatedLabel.setInterceptsMouseClicks (false, false);
@@ -109,13 +109,13 @@ void LicenseOverlay::refreshState()
     if (act)
     {
         const auto mid = st["machineId"].toString();
-        badgeMachineLabel.setText ("机器码：" + mid, juce::dontSendNotification);
+        badgeMachineLabel.setText (juce::String::fromUTF8 ("机器码：") + mid, juce::dontSendNotification);
         statusLabel.setText ({}, juce::dontSendNotification);
     }
     else
     {
         const auto mid = st["machineId"].toString();
-        machineLabel.setText ("机器码（绑定本机）：" + mid, juce::dontSendNotification);
+        machineLabel.setText (juce::String::fromUTF8 ("机器码（绑定本机）：") + mid, juce::dontSendNotification);
         statusLabel.setText ({}, juce::dontSendNotification);
         codeEditor.setText ({}, juce::dontSendNotification);
     }
@@ -147,7 +147,7 @@ void LicenseOverlay::doActivate (const juce::String& code)
 
     if (code.trim().isEmpty())
     {
-        statusLabel.setText ("请输入激活码", juce::dontSendNotification);
+        statusLabel.setText (juce::String::fromUTF8 ("请输入激活码"), juce::dontSendNotification);
         statusLabel.setColour (juce::Label::textColourId, juce::Colour (kWarn));
         return;
     }
@@ -155,7 +155,7 @@ void LicenseOverlay::doActivate (const juce::String& code)
     busy = true;
     activateButton.setEnabled (false);
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
-    statusLabel.setText ("正在激活…", juce::dontSendNotification);
+    statusLabel.setText (juce::String::fromUTF8 ("正在激活…"), juce::dontSendNotification);
 
     juce::Component::SafePointer<LicenseOverlay> safe (this);
     const auto dev = juce::SystemStats::getComputerName();
@@ -186,24 +186,24 @@ void LicenseOverlay::onResult (const juce::var& res)
     if (ok)
     {
         statusLabel.setColour (juce::Label::textColourId, juce::Colour (kAccent));
-        statusLabel.setText ("激活成功！", juce::dontSendNotification);
+        statusLabel.setText (juce::String::fromUTF8 ("激活成功！"), juce::dontSendNotification);
         refreshState();   // 重新读凭证 → 解锁界面 + 打开门控
         return;
     }
 
     juce::String msg;
     if      (code == "INVALID_CODE" || code == "CODE_INVALID")
-        msg = "激活码无效，请检查后重试";
+        msg = juce::String::fromUTF8 ("激活码无效，请检查后重试");
     else if (code == "DEVICE_LIMIT")
-        msg = "激活码已达设备上限，请前往官网解绑旧设备";
+        msg = juce::String::fromUTF8 ("激活码已达设备上限，请前往官网解绑旧设备");
     else if (code == "PRODUCT_MISMATCH")
-        msg = "该激活码不适用于 Fusion EQ";
+        msg = juce::String::fromUTF8 ("该激活码不适用于 Fusion EQ");
     else if (code == "NETWORK")
-        msg = "网络连接失败，请检查网络后重试";
+        msg = juce::String::fromUTF8 ("网络连接失败，请检查网络后重试");
     else if (code == "PARSE")
-        msg = "服务器返回异常，请稍后重试";
+        msg = juce::String::fromUTF8 ("服务器返回异常，请稍后重试");
     else
-        msg = err.isNotEmpty() ? err : juce::String ("激活失败，请稍后重试");
+        msg = err.isNotEmpty() ? err : juce::String::fromUTF8 ("激活失败，请稍后重试");
 
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (kWarn));
     statusLabel.setText (msg, juce::dontSendNotification);
