@@ -129,6 +129,11 @@ public:
     void setBypassed (bool b) noexcept { bypassed.store (b); }
     bool isBypassed()  const noexcept  { return bypassed.load(); }
 
+    /* 授权门：false 时 processBlock 整条链静音（付费锁的真正防线）。
+       构造时按本地凭证置位；编辑器激活成功 / 联网回验通过后再校准。 */
+    void setLicensed (bool on) noexcept { licensed_.store (on, std::memory_order_relaxed); }
+    bool isLicensed() const noexcept    { return licensed_.load (std::memory_order_relaxed); }
+
     /* 输出电平（供电平表） */
     float getOutLevel (int ch) const noexcept
     { return ch == 0 ? outL.load() : outR.load(); }
@@ -339,6 +344,9 @@ private:
     std::atomic<bool>  bypassed { false };
     std::atomic<float> outL { 0.0f };
     std::atomic<float> outR { 0.0f };
+
+    /* 授权门：未授权时 processBlock 整条链静音 */
+    std::atomic<bool>  licensed_ { false };
 
     void pushSamplesForAnalysis (const juce::AudioBuffer<float>&);
     void prepareSpectrumMap();

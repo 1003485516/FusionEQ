@@ -4,6 +4,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "ParamIDs.h"
+#include "LicenseManager.h"
 
 using Coeffs = juce::dsp::IIR::Coefficients<float>;
 
@@ -46,6 +47,14 @@ FusionEQAudioProcessor::FusionEQAudioProcessor()
 
     /* 每模式参数快照：以各模式 spec 默认值起步 */
     initModeStates();
+
+    // 授权门必须在 processor 里就按本地凭证置位。
+    // Logic / auval 扫描插件时只实例化 AU，根本不会 createEditor()；若等到
+    // Editor 构造才放行，那些没打开过界面的实例（验证扫描、后台渲染、冻结
+    // 轨道、离线 bounce）会一直静音。用 getState() 而不是 hasLicense()，
+    // 后者只查文件存在，前者至少要求凭证能解开且型号对得上。
+    // Editor 起来后 reportLicenseState() 会再校准一次（含联网回验结果）。
+    setLicensed ((bool) taiji::LicenseManager::getState()["activated"]);
 }
 
 /* ============================ 每模式参数快照 ============================ */
@@ -852,6 +861,14 @@ void FusionEQAudioProcessor::updateTiltCoefficients()
 void FusionEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
+
+    // 未授权：整条链静音。授权门由编辑器按本地凭证置位（激活成功 / 联网校验通过 → 开；
+    // 吊销 / 过期 / 未激活 → 关）。这是付费锁的真正防线，不靠界面遮罩。
+    if (! licensed_.load (std::memory_order_relaxed))
+    {
+        buffer.clear();
+        return;
+    }
 
     const auto numChannels = juce::jmin (2, buffer.getNumChannels());
     const auto numSamples  = buffer.getNumSamples();

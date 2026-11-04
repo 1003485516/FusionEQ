@@ -24,6 +24,7 @@
 #include "FusionKnob.h"
 #include "SpectrumDisplay.h"
 #include "Strips.h"
+#include "LicenseOverlay.h"
 
 /* ---------------------------------------------------------------------------
    全局字体解析：
@@ -384,6 +385,10 @@ private:
     std::vector<std::unique_ptr<BtnAttach>> bandAttach;
 
     Fusion::Mode lastMode = Fusion::Mode::Count;
+
+    /* 激活覆盖层（与 OH-Tai Ji 同款授权机制的原生实现）：
+       未激活挡住整个 UI 并收集激活码；已激活后透传并保留角落「已激活」徽标。 */
+    std::unique_ptr<LicenseOverlay> licenseOverlay;
 
     /* --- S/M/L 尺寸切换（Pro Tools 等无法拖拽缩放的宿主用） --- */
     std::unique_ptr<SizeSelector> sizeSelector;

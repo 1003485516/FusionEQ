@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FusionEQ VERSION 1.0.14)
+project(FusionEQ VERSION 1.0.15)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -184,6 +184,8 @@ target_sources(FusionEQ PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/SpectrumDisplay.cpp
+    Source/LicenseManager.cpp
+    Source/LicenseOverlay.cpp
 )
 
 target_compile_definitions(FusionEQ PRIVATE
@@ -191,6 +193,12 @@ target_compile_definitions(FusionEQ PRIVATE
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_DISPLAY_SPLASH_SCREEN=0
+
+    # ---- 产品身份：与 OH-Tai Ji 同款激活机制（ohaudio.cn 账户系统）----
+    # OHAUDIO_PRODUCT_ID 必须与服务端 bootstrap.php 里 PRODUCTS 的 key 完全一致。
+    # 产品 ID 一旦有激活码发出就永远不许改；改显示名请改服务端的 name。
+    OHAUDIO_PRODUCT_ID=\"FusionEQ\"
+    OHAUDIO_PRODUCT_VERSION=\"${PROJECT_VERSION}\"
 )
 
 target_link_libraries(FusionEQ PRIVATE

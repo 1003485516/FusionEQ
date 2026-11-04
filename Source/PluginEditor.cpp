@@ -224,6 +224,13 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
 
     refreshMode();
 
+    /* ---- 激活覆盖层（与 OH-Tai Ji 同款授权机制，原生面板实现）----
+       必须在所有其它控件之后 addAndMakeVisible，保证它盖在最上层。
+       构造即按本地凭证刷新一次门控，再按需发起启动回验。 */
+    licenseOverlay = std::make_unique<LicenseOverlay> (processor);
+    canvas.addAndMakeVisible (*licenseOverlay);
+    licenseOverlay->startLaunchVerify();
+
     /* 一切就绪后才允许设置尺寸（触发首次 resized()） */
     setSize (int (unitWidth * uiScales[uiSizeIdx]),   // 默认开窗口 = 中窗 (M, 0.8×)
              int (unitHeight * uiScales[uiSizeIdx]));
@@ -1354,4 +1361,8 @@ void FusionEQAudioProcessorEditor::resized()
 
     /* 机架隐藏 = 频谱扩展（仅干净模式可用）：与顶栏收频谱箭头反向，且与它同一竖直中线 */
     rackToggle.setBounds (scopeToggle.getX(), foot.getY() + 25, 36, 26);
+
+    /* 激活覆盖层始终铺满整块逻辑画布（锁定态挡住所有控件 / 已激活态透传） */
+    if (licenseOverlay != nullptr)
+        licenseOverlay->setBounds (juce::Rectangle<int> (unitWidth, logicalH));
 }
