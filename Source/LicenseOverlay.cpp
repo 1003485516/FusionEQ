@@ -11,14 +11,14 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
 
     /* —— 锁定态 —— */
     titleLabel.setText ("Fusion EQ", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (26.0f, juce::Font::bold));
+    titleLabel.setFont (juce::Font (34.0f, juce::Font::bold));
     titleLabel.setColour (juce::Label::textColourId, juce::Colour (kText));
 
     subtitleLabel.setText (juce::String::fromUTF8 ("需要激活以继续使用"), juce::dontSendNotification);
-    subtitleLabel.setFont (juce::Font (13.0f));
+    subtitleLabel.setFont (juce::Font (17.0f));
     subtitleLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
 
-    machineLabel.setFont (juce::Font (12.0f));   // 默认无衬线 → Windows 解析到微软雅黑（含中文），避免 Consolas 缺中文字形
+    machineLabel.setFont (juce::Font (16.0f));   // 默认无衬线 → Windows 解析到微软雅黑（含中文），避免 Consolas 缺中文字形
     machineLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
 
     codeEditor.setMultiLine (false);
@@ -28,31 +28,32 @@ LicenseOverlay::LicenseOverlay (FusionEQAudioProcessor& p)
     codeEditor.setColour (juce::TextEditor::textColourId,        juce::Colour (0xff1d242b));
     codeEditor.setColour (juce::TextEditor::outlineColourId,     juce::Colour (0xff3a6fd8));
     codeEditor.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (0xff2f9e6a));
-    codeEditor.setFont (juce::Font (15.0f));
+    codeEditor.setFont (juce::Font (19.0f));
     // 回车即激活
     codeEditor.onReturnKey = [this]() { doActivate (codeEditor.getText()); };
 
     activateButton.setColour (juce::TextButton::buttonColourId,   juce::Colour (kAccent));
     activateButton.setColour (juce::TextButton::textColourOffId,  juce::Colours::white);
     activateButton.setColour (juce::TextButton::textColourOnId,   juce::Colours::white);
+    activateButton.getProperties().set ("fontH", 22);   // 通过 FusionLook 的 fontH 属性放大按钮字号
     activateButton.onClick = [this]() { doActivate (codeEditor.getText()); };
 
     buyButton.setButtonText (juce::String::fromUTF8 ("前往官网购买 / 认领激活码"));
     buyButton.setURL (juce::URL ("https://ohaudio.cn/account/"));
     buyButton.setColour (juce::HyperlinkButton::textColourId, juce::Colour (0xff6fb3ff));
-    buyButton.setFont (juce::Font (12.5f), false);
+    buyButton.setFont (juce::Font (16.0f), false);
 
-    statusLabel.setFont (juce::Font (12.5f));
+    statusLabel.setFont (juce::Font (16.0f));
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
     statusLabel.setJustificationType (juce::Justification::centred);
 
     /* —— 已激活态 —— */
     activatedLabel.setText (juce::String::fromUTF8 ("已激活"), juce::dontSendNotification);
-    activatedLabel.setFont (juce::Font (13.0f, juce::Font::bold));
+    activatedLabel.setFont (juce::Font (17.0f, juce::Font::bold));
     activatedLabel.setColour (juce::Label::textColourId, juce::Colour (kAccent));
     activatedLabel.setInterceptsMouseClicks (false, false);
 
-    badgeMachineLabel.setFont (juce::Font (10.0f));   // 默认无衬线 → 含中文
+    badgeMachineLabel.setFont (juce::Font (13.0f));   // 默认无衬线 → 含中文
     badgeMachineLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
     badgeMachineLabel.setInterceptsMouseClicks (false, false);
 
@@ -128,10 +129,14 @@ void LicenseOverlay::startLaunchVerify()
     if (! taiji::LicenseManager::shouldVerifyOnLaunch())
         return;
 
+    opIsActivate = false;   // 这是启动回验，不是手动激活
+
     juce::Component::SafePointer<LicenseOverlay> safe (this);
     std::thread ([safe]
     {
-        auto res = taiji::LicenseManager::verify();
+        juce::var res;
+        try { res = taiji::LicenseManager::verify(); }
+        catch (...) { res = makeNetError(); }
         juce::MessageManager::callAsync ([safe, res]
         {
             if (safe != nullptr)
@@ -153,6 +158,7 @@ void LicenseOverlay::doActivate (const juce::String& code)
     }
 
     busy = true;
+    opIsActivate = true;   // 手动激活操作
     activateButton.setEnabled (false);
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (kText2));
     statusLabel.setText (juce::String::fromUTF8 ("正在激活…"), juce::dontSendNotification);
@@ -165,13 +171,24 @@ void LicenseOverlay::doActivate (const juce::String& code)
 
     std::thread ([safe, code, dev, osn, plugin, ver]
     {
-        auto res = taiji::LicenseManager::activate (code, dev, osn, plugin, ver);
+        juce::var res;
+        try { res = taiji::LicenseManager::activate (code, dev, osn, plugin, ver); }
+        catch (...) { res = makeNetError(); }
         juce::MessageManager::callAsync ([safe, res]
         {
             if (safe != nullptr)
                 safe->onResult (res);
         });
     }).detach();
+}
+
+juce::var LicenseOverlay::makeNetError()
+{
+    juce::var e (new juce::DynamicObject());
+    e.getDynamicObject()->setProperty ("ok", false);
+    e.getDynamicObject()->setProperty ("code", "NETWORK");
+    e.getDynamicObject()->setProperty ("error", juce::String::fromUTF8 ("网络请求异常，请检查网络或稍后重试"));
+    return e;
 }
 
 void LicenseOverlay::onResult (const juce::var& res)
@@ -200,15 +217,23 @@ void LicenseOverlay::onResult (const juce::var& res)
         msg = juce::String::fromUTF8 ("该激活码不适用于 Fusion EQ");
     else if (code == "NETWORK")
         msg = juce::String::fromUTF8 ("网络连接失败，请检查网络后重试");
-    else if (code == "PARSE")
+    else if (code == "PARSE" || code == "NO_LICENSE")
         msg = juce::String::fromUTF8 ("服务器返回异常，请稍后重试");
     else
         msg = err.isNotEmpty() ? err : juce::String::fromUTF8 ("激活失败，请稍后重试");
 
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (kWarn));
     statusLabel.setText (msg, juce::dontSendNotification);
+    statusLabel.repaint();
 
-    refreshState();   // 回验吊销时也会走这里，重读凭证重新锁定
+    // 关键修复：手动激活失败时不要调用 refreshState()——它会把 statusLabel 清空，
+    // 导致「错误提示一闪即没、看起来像点了没反应」。仅当这是「启动回验」需要翻回锁定态时才刷新。
+    if (! opIsActivate)
+    {
+        refreshState();
+        statusLabel.setText (msg, juce::dontSendNotification);   // 刷新后再补回错误文案
+        statusLabel.repaint();
+    }
 }
 
 void LicenseOverlay::paint (juce::Graphics& g)
@@ -219,7 +244,7 @@ void LicenseOverlay::paint (juce::Graphics& g)
         g.fillAll (juce::Colour (kBackdrop));
 
         // 居中卡片
-        auto card = getLocalBounds().toFloat().withSizeKeepingCentre (480.0f, 392.0f);
+        auto card = getLocalBounds().toFloat().withSizeKeepingCentre (540.0f, 452.0f);
         g.setColour (juce::Colour (0x40000000));
         g.fillRoundedRectangle (card.expanded (6.0f, 6.0f), 18.0f);
         g.setColour (juce::Colour (kCard));
@@ -246,25 +271,25 @@ void LicenseOverlay::resized()
     auto b = getLocalBounds();
 
     // —— 锁定态卡片内控件布局 ——
-    auto card = b.withSizeKeepingCentre (480, 392);
-    const int x = card.getX() + 44;
-    const int w = card.getWidth() - 88;
+    auto card = b.withSizeKeepingCentre (540, 452);
+    const int x = card.getX() + 50;
+    const int w = card.getWidth() - 100;
 
-    titleLabel.setBounds        (x, card.getY() + 30, w, 34);
-    subtitleLabel.setBounds     (x, card.getY() + 66, w, 22);
-    machineLabel.setBounds      (x, card.getY() + 104, w, 24);
-    codeEditor.setBounds        (x, card.getY() + 136, w, 44);
-    activateButton.setBounds    (x, card.getY() + 196, w, 46);
-    buyButton.setBounds         (x, card.getY() + 256, w, 26);
-    statusLabel.setBounds       (x, card.getY() + 292, w, 56);
+    titleLabel.setBounds        (x, card.getY() + 36,  w, 40);
+    subtitleLabel.setBounds     (x, card.getY() + 86,  w, 26);
+    machineLabel.setBounds      (x, card.getY() + 126, w, 28);
+    codeEditor.setBounds        (x, card.getY() + 166, w, 52);
+    activateButton.setBounds    (x, card.getY() + 238, w, 54);
+    buyButton.setBounds         (x, card.getY() + 312, w, 30);
+    statusLabel.setBounds       (x, card.getY() + 354, w, 70);
 
     // —— 已激活徽标（右上角 desc 区，避开顶栏按钮与频谱）——
-    const int bw = 320, bh = 50;
+    const int bw = 380, bh = 56;
     badgeRect = juce::Rectangle<float> ((float) (b.getWidth() - bw - 16),
                                         (float) (66 + 6),   // topBarH(66) 之下
                                         (float) bw, (float) bh);
 
-    activatedLabel.setBounds    (b.getWidth() - bw - 16 + 14, 66 + 8,  56, 16);
-    badgeMachineLabel.setBounds (b.getWidth() - bw - 16 + 14, 66 + 26, bw - 14 - 64, 16);
-    logoutButton.setBounds      (b.getWidth() - 16 - 60,        66 + 12, 60, 26);
+    activatedLabel.setBounds    (b.getWidth() - bw - 16 + 16, 66 + 9,  64, 18);
+    badgeMachineLabel.setBounds (b.getWidth() - bw - 16 + 16, 66 + 30, bw - 16 - 76, 18);
+    logoutButton.setBounds      (b.getWidth() - 16 - 70,        66 + 13, 70, 30);
 }

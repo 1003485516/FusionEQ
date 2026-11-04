@@ -39,11 +39,13 @@ public:
 private:
     void doActivate (const juce::String& code);
     void onResult (const juce::var& res);   // 消息线程：刷新状态 + 提示
+    static juce::var makeNetError();        // 线程内异常时构造一个 NETWORK 错误对象
 
     FusionEQAudioProcessor& processor;
 
     bool active = false;   // 是否已激活（决定是否拦截鼠标）
     bool busy   = false;   // 激活/回验进行中，防重入
+    bool opIsActivate = true;   // 当前后台操作是「激活」(true) 还是「启动回验」(false)
 
     /* —— 锁定态控件（未激活时可见、拦截鼠标）—— */
     juce::Label      titleLabel;        // 「Fusion EQ」
