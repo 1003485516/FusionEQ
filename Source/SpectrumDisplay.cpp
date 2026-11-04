@@ -140,10 +140,12 @@ void SpectrumDisplay::timerCallback()
        快照由 UI 侧主动刷新：updateResponseSnapshot 现在完全自包含
        （直接从参数现算系数），宿主停止播放（音频线程不跑）时低切
        开关等也能立刻反映到曲线上。 */
-    if (computeStateHash() != lastStateHash)
+    if (computeStateHash() != lastCurveHash)
     {
         processor.refreshCurveFromUI();
-        processor.readCurve (curveLocal);        // 刷新后重读
+        /* 读失败（seqlock 正被写）时把记账清 0，让下次巡检重来，
+           绝不能拿旧缓冲冒充"这版参数已画" */
+        lastCurveHash = processor.readCurve (curveLocal) ? computeStateHash() : 0;
         staticDirty = true;
         lastSnapVersion = processor.snapVersion.load();
         repaint();
@@ -151,7 +153,9 @@ void SpectrumDisplay::timerCallback()
     else if (processor.snapVersion.load() != lastSnapVersion)
     {
         /* 音频线程在背后重算过快照（如播放中切换模式）——
-           旧逻辑感知不到这种情况，曲线会一直停留在旧状态 */
+           旧逻辑感知不到这种情况，曲线会一直停留在旧状态。
+           ⚠️ 这里只重读、不记账：这一版快照未必对应当前参数
+           （可能在模式切换的中途发布），记账会让曲线永久卡在中间态。 */
         processor.readCurve (curveLocal);
         staticDirty = true;
         lastSnapVersion = processor.snapVersion.load();
@@ -238,6 +242,19 @@ void SpectrumDisplay::timerCallback()
 
     /* 只重画绘图区，标签与网格都走缓存 */
     repaint (juce::Rectangle<int> (plotX, plotY, plotW, plotH).expanded (12));
+}
+
+/* 立即按当前参数重算曲线（切模式 / 载入预置后由编辑器显式调用）。
+   不依赖 60 Hz 巡检，也不依赖音频线程 —— Logic 停止播放时音频线程
+   根本不跑，曲线只能靠这条路径更新。 */
+void SpectrumDisplay::forceCurveRefresh()
+{
+    processor.refreshCurveFromUI();
+    /* 读失败就把记账清 0，交给下一帧巡检重来，避免拿旧缓冲冒充新曲线 */
+    lastCurveHash   = processor.readCurve (curveLocal) ? computeStateHash() : 0;
+    lastSnapVersion = processor.snapVersion.load();
+    staticDirty = true;
+    repaint();
 }
 
 /* ============================ 坐标 ============================ */
@@ -382,7 +399,12 @@ void SpectrumDisplay::rebuildStaticLayer()
         drawCurves (g, plot);
     }
 
-    lastStateHash = computeStateHash();
+    /* ⚠️ 这里绝不能写 lastCurveHash = computeStateHash()：
+       本函数只重绘"已有"曲线，并没有重算它。换肤/高亮等 setter 也会
+       把 staticDirty 置位并触发本函数；若在此记账，下一帧巡检就会认为
+       曲线已经是新版，从此不再重算 —— 宿主停止播放（Logic 空闲不跑
+       音频线程，snapVersion 不变）时，切模式后曲线会永久停在上一个
+       模式，表现为"曲线被带到别的模式"。记账只在真正重算处做。 */
     staticDirty = false;
 }
 

@@ -29,6 +29,12 @@ public:
     void setPeakHoldMode (bool h) noexcept { holdPeaks = h; }
     bool getPeakHoldMode() const noexcept  { return holdPeaks; }
 
+    /* 立即按当前参数重算并重画曲线（切模式 / 载入预置后用）。
+       ⚠️ 不能只靠 60 Hz 巡检：换肤类 setter 会先触发一次重绘，
+       那次重绘若不带着曲线一起重算，就会把新哈希记成"已画"，
+       曲线从此停在上一个模式（宿主不跑音频时永远不回正）。 */
+    void forceCurveRefresh();
+
     /* 鼠标停在机架某一段上时，突出显示该段的曲线与频点 */
     void setHighlightBand (int b) noexcept
     {
@@ -181,7 +187,11 @@ private:
        每帧只重画频谱与节点 —— 这是 60 fps 还能保持低占用的关键。 */
     juce::Image  bgLayer, curveLayer;
     bool         staticDirty = true;
-    juce::uint64 lastStateHash = 0;
+    /* lastStateHash 记录的是"曲线实际按哪一版参数画出来"的哈希。
+       ⚠️ 只能在真正重算过曲线之后更新 —— 否则背景层因换肤/高亮重绘时
+       提前把新哈希记下，曲线就再也不会被刷新（宿主停止播放时尤其明显：
+       切模式后曲线一直停在上一个模式，表现为"曲线被带到别的模式"）。 */
+    juce::uint64 lastCurveHash = 0;
 
     /* 每帧从处理器 seqlock 拷贝一份快照到本地：
        绘制期间音频线程随时可能发布新快照，直接引用共享缓冲会读到

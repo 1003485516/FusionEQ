@@ -768,6 +768,13 @@ void FusionEQAudioProcessorEditor::refreshMode()
         rackCompsHidden = false;       // 恢复显示：条带已按当前模式重设可见性
 
     lastMode = m;
+
+    /* 曲线立即按新模式重算并重绘。
+       宿主停止播放（Logic 空闲）时音频线程不跑，snapVersion 不会推进，
+       只靠 60 Hz 巡检容易被换肤触发的那次重绘抢先"记账"而永久卡旧图 ——
+       这里显式刷新，切模式后曲线不会残留上一个模式的形状。 */
+    spectrum.forceCurveRefresh();
+
     repaint();
 }
 

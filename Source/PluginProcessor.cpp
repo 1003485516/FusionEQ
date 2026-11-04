@@ -1874,9 +1874,12 @@ void FusionEQAudioProcessor::updateResponseSnapshot()
 
         if (isCut && on)
         {
+            /* 斜率直接读参数（不读 DSP 侧 bands[].slopeDb）：
+               本函数要"完全自包含"，否则宿主停止播放、音频线程不跑时
+               这里会拿上一个模式的旧斜率画曲线。 */
             units = juce::jlimit (1, 32,
                             (int) std::round (juce::jlimit (6.0f, 192.0f,
-                                            bands[(size_t) b].slopeDb) / 6.0f));
+                                            apvts.getRawParameterValue (IDs::bSlope (b))->load()) / 6.0f));
 
             sec2 = units / 2;
             has1 = (units % 2) != 0;
