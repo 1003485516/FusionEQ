@@ -35,6 +35,12 @@ public:
        曲线从此停在上一个模式（宿主不跑音频时永远不回正）。 */
     void forceCurveRefresh();
 
+    /* 右键菜单弹出期间暂停 60 Hz 频谱刷新。
+       JUCE 的弹出菜单跑在自己的消息循环里，频谱若仍以 60 Hz 重绘整块绘图区，
+       会不断抢消息线程 → 鼠标在菜单项之间来回移动时高亮要等一两帧才跟上，
+       表现为"卡一下"。菜单关闭后恢复。 */
+    void setMenuOpen (bool open);
+
     /* 鼠标停在机架某一段上时，突出显示该段的曲线与频点 */
     void setHighlightBand (int b) noexcept
     {
@@ -187,6 +193,11 @@ private:
        每帧只重画频谱与节点 —— 这是 60 fps 还能保持低占用的关键。 */
     juce::Image  bgLayer, curveLayer;
     bool         staticDirty = true;
+    bool         menuOpen = false;      // 右键菜单弹出中 → 暂停 60 Hz 刷新
+
+    /* computeStateHash 用的参数指针（构造时缓存，避免每帧重建 ID 字符串） */
+    std::atomic<float>* hashHpfOn = nullptr;
+    std::atomic<float>* hashParams[Fusion::numBands][7] {};
     /* lastStateHash 记录的是"曲线实际按哪一版参数画出来"的哈希。
        ⚠️ 只能在真正重算过曲线之后更新 —— 否则背景层因换肤/高亮重绘时
        提前把新哈希记下，曲线就再也不会被刷新（宿主停止播放时尤其明显：

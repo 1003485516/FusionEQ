@@ -52,6 +52,22 @@ SpectrumDisplay::SpectrumDisplay (FusionEQAudioProcessor& p) : processor (p)
 
     processor.readSpectrum (specLocal);
     processor.readCurve (curveLocal);
+
+    /* 缓存哈希用的参数指针：computeStateHash() 每秒跑 60 次，
+       若每次都现拼 "bandNxxx" 字符串再查表，会有上百次 String 分配/秒的
+       无谓开销（菜单弹出时这些开销直接变成菜单高亮的延迟）。 */
+    hashHpfOn = processor.apvts.getRawParameterValue (IDs::hpfOn);
+
+    for (int i = 0; i < Fusion::numBands; ++i)
+    {
+        hashParams[(size_t) i][0] = processor.apvts.getRawParameterValue (IDs::bOn    (i));
+        hashParams[(size_t) i][1] = processor.apvts.getRawParameterValue (IDs::bType  (i));
+        hashParams[(size_t) i][2] = processor.apvts.getRawParameterValue (IDs::bFreq  (i));
+        hashParams[(size_t) i][3] = processor.apvts.getRawParameterValue (IDs::bGain  (i));
+        hashParams[(size_t) i][4] = processor.apvts.getRawParameterValue (IDs::bQ     (i));
+        hashParams[(size_t) i][5] = processor.apvts.getRawParameterValue (IDs::bSlope (i));
+        hashParams[(size_t) i][6] = processor.apvts.getRawParameterValue (IDs::bChan  (i));
+    }
 }
 
 SpectrumDisplay::~SpectrumDisplay() { stopTimer(); }
@@ -89,25 +105,21 @@ juce::uint64 SpectrumDisplay::computeStateHash() const
         return (juce::int64) std::llround ((double) v * (double) s);
     };
 
-    const auto raw = [this] (const juce::String& id)
+    const auto load = [] (const std::atomic<float>* p)
     {
-        const auto* p = processor.apvts.getRawParameterValue (id);
         return p != nullptr ? p->load() : 0.0f;
     };
 
     mix ((juce::int64) processor.getMode());
-    mix (q (raw (IDs::hpfOn),  10.0f));
+    mix (q (load (hashHpfOn), 10.0f));
+
+    /* 顺序必须与旧实现一致（每次改动的哈希值不要求兼容，只要求稳定） */
+    static constexpr float scales[7] = { 10.0f, 10.0f, 100.0f, 100.0f,
+                                         100.0f, 100.0f, 10.0f };
 
     for (int i = 0; i < Fusion::numBands; ++i)
-    {
-        mix (q (raw (IDs::bOn   (i)),       10.0f));
-        mix (q (raw (IDs::bType (i)),       10.0f));
-        mix (q (raw (IDs::bFreq (i)),      100.0f));
-        mix (q (raw (IDs::bGain (i)),      100.0f));
-        mix (q (raw (IDs::bQ    (i)),      100.0f));
-        mix (q (raw (IDs::bSlope(i)),      100.0f));   // 低切/高切斜率 → 曲线要重画
-        mix (q (raw (IDs::bChan (i)),       10.0f));   // 声道模式影响段颜色 → 触发曲线缓存重绘
-    }
+        for (int k = 0; k < 7; ++k)
+            mix (q (load (hashParams[(size_t) i][(size_t) k]), scales[k]));
 
     mix ((juce::int64) (highlightBand + 8));
     mix ((juce::int64) (activeBand + 8));
@@ -255,6 +267,24 @@ void SpectrumDisplay::forceCurveRefresh()
     lastSnapVersion = processor.snapVersion.load();
     staticDirty = true;
     repaint();
+}
+
+/* 菜单期间停表：弹出菜单是模态消息循环，60 Hz 的整块绘图区重绘会
+   持续抢消息线程，菜单高亮要等一两帧才跟上（用户感知为"卡一下"）。 */
+void SpectrumDisplay::setMenuOpen (bool open)
+{
+    if (menuOpen == open)
+        return;
+
+    menuOpen = open;
+
+    if (open)
+        stopTimer();
+    else
+    {
+        startTimerHz (60);
+        repaint();
+    }
 }
 
 /* ============================ 坐标 ============================ */
@@ -1559,9 +1589,14 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
 
             /* 动态压缩不再进右键菜单 —— 悬浮框里已有 DYN 开关 + 四旋钮 */
 
+            /* 菜单弹出期间暂停 60 Hz 频谱刷新，菜单高亮才能跟手 */
+            setMenuOpen (true);
+
             m.showMenuAsync (juce::PopupMenu::Options(),
                 [this, band] (int result)
                 {
+                    setMenuOpen (false);   // 先恢复刷新再处理结果（每条分支都会走到这里）
+
                     /* 1101..1105 = 声道模式 */
                     if (result >= 1101 && result <= 1105)
                     {

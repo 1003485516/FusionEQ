@@ -189,9 +189,14 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
         m.addItem (4, "X8",             true, cur == 3);
         m.addItem (5, "X16",            true, cur == 4);
 
+        /* 菜单期间停掉频谱刷新，避免 60 Hz 重绘抢消息线程（菜单高亮卡顿） */
+        spectrum.setMenuOpen (true);
+
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&osButton),
             [this] (int result)
             {
+                spectrum.setMenuOpen (false);
+
                 if (result <= 0)
                     return;
 
