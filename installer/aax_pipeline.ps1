@@ -1,7 +1,10 @@
 ﻿# Fusion EQ - AAX 一键流水线：找/解压 SDK -> 编译 AAX -> 并入构建目录 -> 重打安装包
 param([switch]$NoPackage)
 
-$ErrorActionPreference = 'Stop'
+# 用 Continue 而非 Stop：CMake/MSVC 会把 dev 警告写到 stderr，Stop 会把这些警告当成
+# 致命 NativeCommandError 中断流水线（AAX 配置其实成功，却从 cmake 那行被掐断）。
+# 真正的失败由各步骤的 $LASTEXITCODE 检查捕获，行为不变。
+$ErrorActionPreference = 'Continue'
 $proj    = Split-Path -Parent $PSScriptRoot
 $sdkDir  = 'E:\FusionEQ\sdk'
 $juceDir = 'E:\FusionEQ\sdk\JUCE-7.0.12'

@@ -240,7 +240,12 @@ private:
     juce::Rectangle<float> hudHeadRect (int band) const;    // 耳机开关按钮（浮窗唯一控件）
     juce::Rectangle<float> hudDynRect (int band) const;     // DYN 开关（干净模式）
     juce::Rectangle<float> hudKnobRect (int band, int k) const; // 压缩小旋钮 0THR/1RNG/2ATT/3REL
-    void drawHUD (juce::Graphics&);
+    void drawHUD (juce::Graphics&);                  // 入口：命中缓存则直接 blit，否则重渲染
+    void drawHudContent (juce::Graphics&, int b, float a); // 实际绘制（a = 整体不透明度，已烘焙）
+    juce::uint64 hudContentSig (int b, const juce::Rectangle<float>& r) const; // 浮窗内容指纹
+    juce::HashMap<juce::uint64, juce::Image> hudCache; // 按指纹缓存的浮窗离屏图：内容不变则只 blit
+    bool hudWarmed = false;                          // 是否已预热（插件构造时把一次性字体/类型面加载费提前付掉）
+    void warmHud();                                  // 预热：把所有频点浮窗渲染进 hudCache，消除首次悬停卡顿
 
     /* 悬浮框压缩小旋钮的垂直拖动状态 */
     bool  dynKnobDrag    = false;

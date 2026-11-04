@@ -9,6 +9,17 @@ constexpr int  kObfKeyLen = (int) (sizeof (kObfKey) - 1);
 // 离线信任上限：距上次联网校验超过这么多毫秒才在启动时再 verify（API.md 建议 7–30 天）
 constexpr juce::int64 kVerifyIntervalMs = 7LL * 24 * 60 * 60 * 1000;
 
+// 归一化产品 ID：转小写后只留字母数字（顺手吃掉空格 / 连字符）。
+// 背景：服务端 PRODUCTS 的 key 是 "Fusion EQ"（带空格），而构建时注入的
+// OHAUDIO_PRODUCT_ID 是 "FusionEQ"（无空格）。两端差一个空格时，下面的精确
+// 匹配会把合法凭证当「别的产品」直接丢弃，表现为「激活成功闪一下又退回」。
+// 归一化后 "Fusion EQ" / "FusionEQ" / "fusioneq" 都视作同一款，
+// 与服务端 resolve_product_id 的口径对齐，彻底消除空格/大小写引发的误判。
+juce::String normalizeProductId (const juce::String& raw)
+{
+    return raw.toLowerCase().retainCharacters ("abcdefghijklmnopqrstuvwxyz0123456789");
+}
+
 // 对字符串的原始 UTF-8 字节做 XOR，再 base64。直接动字节，避开 String 的码点语义。
 juce::String LicenseManager::scramble (const juce::String& s)
 {
@@ -126,7 +137,7 @@ juce::var LicenseManager::readLicense()
     // 别的产品凭证（哪怕是手工塞进来的）一律视作未激活。
     // 本地文件按产品分只是第一道，这里再按内容核一次。
     const auto p = parsed["product"].toString();
-    if (p.isNotEmpty() && p != product::id())
+    if (p.isNotEmpty() && normalizeProductId (p) != normalizeProductId (product::id()))
         return {};
 
     return parsed;
@@ -138,7 +149,7 @@ void LicenseManager::saveLicense (const juce::var& license)
         return;
 
     const auto p = license["product"].toString();
-    if (p.isNotEmpty() && p != product::id())
+    if (p.isNotEmpty() && normalizeProductId (p) != normalizeProductId (product::id()))
         return;   // 服务器返回的型号与本机不符，不落盘（双保险）
 
     auto now = juce::Time::currentTimeMillis();

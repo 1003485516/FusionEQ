@@ -62,6 +62,10 @@ SpectrumDisplay::SpectrumDisplay (FusionEQAudioProcessor& p) : processor (p)
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
             if (auto* raw = processor.apvts.getRawParameterValue (rp->paramID))
                 hashParams.push_back (raw);
+
+    /* 预热浮窗缓存：把「首次悬停才付的」字体/类型面/Drawable 一次性加载费提前到
+       构造时付清，避免打开插件后第一次把鼠标放到频点上浮窗卡那一下。 */
+    warmHud();
 }
 
 SpectrumDisplay::~SpectrumDisplay() { stopTimer(); }
@@ -931,7 +935,9 @@ juce::Rectangle<float> SpectrumDisplay::hudRect (int b) const
     /* 干净模式：DYN 行常显；四个压缩旋钮随 hudDynVis 淡入展开 */
     const bool clean = processor.getMode() == Fusion::Mode::Clean;
     const float w = clean ? 300.0f : 220.0f;          // 字号放大后加宽
-    const float h = clean ? 108.0f + 56.0f * hudDynVis : 80.0f;
+    /* 干净模式：DYN 胶囊占第 3 行、压缩四旋钮占第 4 行（不重叠），
+       高度 = 胶囊行底(+77) + 旋钮行(+86~+116) + 底部留白 */
+    const float h = clean ? 120.0f + 28.0f * hudDynVis : 80.0f;
     float bx = juce::jlimit (plotX + 4.0f, plotX + plotW - w - 4.0f, x - w * 0.5f);
 
     /* 上/下放置带滞回：上方放不下才落到下方；一旦在下方就粘住，
@@ -993,14 +999,15 @@ juce::Rectangle<float> SpectrumDisplay::hudDynRect (int b) const
 }
 
 /* 动态压缩小旋钮（干净模式）：k = 0 THR / 1 RNG / 2 ATT / 3 REL
-   旋钮整体上移（原 +74）：贴近读数行、远离浮窗底缘 —— 黄色虚线
-   常从浮窗下部穿过，太低会被误当成拖黄线 */
+   放在 DYN 胶囊「下方」的独立一行（y+86），与胶囊（y+53，高 24 → 底 +77）
+   拉开 9px 间距，彻底消除「DYN 按钮压住 THR 旋钮」的重叠；下方仍有留白，
+   不会顶到浮窗底缘，也不会和从浮窗下部穿过的黄色虚线抢命中 */
 juce::Rectangle<float> SpectrumDisplay::hudKnobRect (int b, int k) const
 {
     const auto r = hudRect (b);
     const float cellW = (r.getWidth() - 16.0f) / 4.0f;
     const float cx = r.getX() + 8.0f + cellW * ((float) k + 0.5f);
-    return { cx - 15.0f, r.getY() + 57.0f, 30.0f, 30.0f };
+    return { cx - 15.0f, r.getY() + 86.0f, 30.0f, 30.0f };
 }
 
 /* 动态压缩参数辅助：k = 0 THR / 1 RNG / 2 ATT / 3 REL */
@@ -1054,6 +1061,64 @@ static std::unique_ptr<juce::Drawable> makeChanIcon (int cm)
     return d;
 }
 
+/* 菜单图标缓存：type / channel 的矢量图标（GlyphArrangement → Path）只构建一次
+   并缓存，之后每次菜单只 clone（廉价的结构拷贝，不重跑字型光栅化）。
+   注：图标并非卡顿主因；右键菜单卡顿的真正来源是 addSubMenu 每次 hover 都新建一个
+   带系统阴影的原生子菜单窗口。当前已改为单窗口分区菜单（EQ TYPE / CHANNEL 直接列在
+   同一弹出层），彻底消除窗口开合开销。图标缓存仅用于复用，保留无害。 */
+static juce::Drawable* cachedTypeIcon (int t)
+{
+    static std::unique_ptr<juce::Drawable> cache[(int) Fusion::BandType::Count];
+    if (t < 0 || t >= (int) Fusion::BandType::Count) return nullptr;
+    if (! cache[t])
+        cache[t] = Fusion::makeTypeIcon (t, juce::Colour (0xffe8eef4));
+    return cache[t].get();
+}
+
+static juce::Drawable* cachedChanIcon (int cm)
+{
+    static std::unique_ptr<juce::Drawable> cache[5];
+    if (cm < 0 || cm >= 5) return nullptr;
+    if (! cache[cm])
+        cache[cm] = makeChanIcon (cm);
+    return cache[cm].get();
+}
+
+/* 浮窗指纹：内容不变时直接 blit 缓存层，避免 60Hz 整图重绘时反复重画浮窗
+   （这是鼠标悬停频点时浮窗"卡一下"的根因 —— 浮窗跟着频谱每帧重绘，
+   在音频播放时把本就吃紧的帧预算挤爆）。指纹覆盖所有会改外观的输入。 */
+juce::uint64 SpectrumDisplay::hudContentSig (int b, const juce::Rectangle<float>& r) const
+{
+    juce::uint64 h = 1469598103934665603ull;
+    const auto mix = [&h] (juce::int64 v) { h ^= (juce::uint64) v; h *= 1099511628211ull; };
+    const auto q  = [] (float v, float s) { return (juce::int64) std::llround ((double) v * (double) s); };
+
+    mix ((juce::int64) (b + 8));
+    mix ((juce::int64) processor.getMode());
+    mix ((juce::int64) processor.getBandType (b));
+    mix ((juce::int64) (processor.getBandDynOn (b) ? 1 : 0));
+    mix (q (processor.getBandFreq (b), 100.0f));
+    mix (q (processor.getBandGain (b), 100.0f));
+    mix (q (processor.getBandQ (b), 1000.0f));
+    mix ((juce::int64) Fusion::cutSlopeIndex (processor.getBandSlope (b)));
+    mix (q (processor.getBandDynGr (b), 10.0f));       // GR 实时变化也纳入
+    /* 四个压缩旋钮归一化值（拖拽时变） */
+    for (int k = 0; k < 4; ++k)
+        if (auto* prm = processor.apvts.getParameter (dynParamId (b, k)))
+            mix (q (prm->getValue(), 1000.0f));
+    /* 展开动画（量化为整数，避免每帧微抖动都触发重渲）。
+       注意：淡入/淡出不进指纹 —— 它已由 drawHUD 的 setOpacity 统一处理，
+       浮窗层以整体不透明度 1.0 烘焙，blit 时按 hudAlpha 缩放，数学等价且免重渲。 */
+    mix ((juce::int64) juce::roundToInt (hudDynVis * 20.0f));
+    mix ((juce::int64) (dynKnobDrag && dynKnobBand == b ? dynKnobIdx + 1 : 0));
+    /* 浮窗位置/尺寸（跟随频点移动 / 上下翻转 / 展开时变） */
+    mix ((juce::int64) juce::roundToInt (r.getX()));
+    mix ((juce::int64) juce::roundToInt (r.getY()));
+    mix ((juce::int64) juce::roundToInt (r.getWidth()));
+    mix ((juce::int64) juce::roundToInt (r.getHeight()));
+    return h;
+}
+
 void SpectrumDisplay::drawHUD (juce::Graphics& g)
 {
     int b = hudBand();
@@ -1065,8 +1130,88 @@ void SpectrumDisplay::drawHUD (juce::Graphics& g)
     if (b < 0 || hudAlpha <= 0.02f)
         return;
 
+    const auto r   = hudRect (b);
+    const auto sig = hudContentSig (b, r);
+
+    const int lw = juce::roundToInt (r.getWidth());
+    const int lh = juce::roundToInt (r.getHeight());
+
+    /* 按指纹查缓存：命中且尺寸一致就直接 blit（只「一次 drawImage」），
+       不命中或尺寸变化才重渲染进离屏图。
+       淡入/淡出由下面的 setOpacity 统一处理，不进指纹 → 不触发重渲。 */
+    juce::Image layer = hudCache[sig];   // 缺失时返回默认（无效）Image，不插入
+    if (! layer.isValid() || layer.getWidth() != lw || layer.getHeight() != lh)
+    {
+        /* 容量保护：拖压缩/拖频点时浮窗签名每帧变，缓存会持续新增。
+           超过 40 张就清空并重建预热集，把内存钉在 ~40 张小图以内；
+           清空当帧只会多一次重渲（与签名本就每帧变时的行为一致），无感知影响。 */
+        if (hudCache.size() > 40)
+        {
+            hudCache.clear();
+            warmHud();
+        }
+        juce::Image img (juce::Image::ARGB, juce::jmax (1, lw), juce::jmax (1, lh), true);
+        {
+            juce::Graphics lg (img);
+            lg.addTransform (juce::AffineTransform::translation (-r.getX(), -r.getY()));
+            /* 以整体不透明度 1.0 渲染进离屏图；真正的淡入淡出由下面的 setOpacity 统一处理 */
+            drawHudContent (lg, b, 1.0f);
+        }
+        hudCache.set (sig, img);
+        layer = img;
+    }
+
+    g.setOpacity (hudAlpha);
+    g.drawImageAt (layer, juce::roundToInt (r.getX()), juce::roundToInt (r.getY()));
+    g.setOpacity (1.0f);
+}
+
+void SpectrumDisplay::warmHud()
+{
+    if (hudWarmed)
+        return;
+    hudWarmed = true;
+
+    /* 预热：把所有频点的浮窗渲染进缓存。
+       关键收益 —— 字体/类型面(typeface) 懒加载、makeHeadphoneIcon 首次
+       构建 Drawable 这些**一次性全局开销**，平时发生在「首次悬停浮窗」的那一帧，
+       表现为悬停第一下卡顿、之后却永远不卡。这里把它们提前到插件构造时付清，
+       用户首次悬停直接 blit 缓存图，不再触发任何加载。 */
+    for (int b = 0; b < Fusion::numBands; ++b)
+    {
+        /* 干净模式：把 DYN 行的「未展开 / 已展开」两种稳态都预热，
+           悬停后 DYN 胶囊点开时也直接 blit，不再有展开瞬间的重渲。 */
+        const bool clean = (processor.getMode() == Fusion::Mode::Clean);
+        for (int s = 0; s < (clean ? 2 : 1); ++s)
+        {
+            const float savedDyn = hudDynVis;
+            if (clean)
+                hudDynVis = (s == 0) ? 0.0f : 1.0f;   // 暂设展开态以匹配签名与渲染
+
+            const auto r = hudRect (b);
+            const auto sig = hudContentSig (b, r);
+
+            if (! hudCache.contains (sig))
+            {
+                const int lw = juce::roundToInt (r.getWidth());
+                const int lh = juce::roundToInt (r.getHeight());
+                juce::Image img (juce::Image::ARGB, juce::jmax (1, lw), juce::jmax (1, lh), true);
+                {
+                    juce::Graphics lg (img);
+                    lg.addTransform (juce::AffineTransform::translation (-r.getX(), -r.getY()));
+                    drawHudContent (lg, b, 1.0f);   // 此处仍用上面暂设的 hudDynVis 渲染，保证与签名一致
+                }
+                hudCache.set (sig, img);
+            }
+
+            hudDynVis = savedDyn;                   // 渲染完再还原
+        }
+    }
+}
+
+void SpectrumDisplay::drawHudContent (juce::Graphics& g, int b, float a)
+{
     const auto r = hudRect (b);
-    const float a = hudAlpha;                    // 淡出透明度
 
     /* 底板：投影 + 深色圆角面板 + 细描边 */
     g.setColour (juce::Colours::black.withAlpha (0.35f * a));
@@ -1299,6 +1444,12 @@ float SpectrumDisplay::nodeYOf (int b) const
     /* 低切/高切段：竖轴 = 共振 Q（与拖拽共用同一换算） */
     if (t == Fusion::BandType::LowCut || t == Fusion::BandType::HighCut)
     {
+        /* 关闭的频段没有滤波作用：节点贴 0 dB，与关闭的钟形段行为一致。
+           否则低切/高切即便关闭，也会按共振 Q 的竖轴表示浮在 0 线下方，
+           表现为"默认/关闭状态下频点不在线上"（干净模式 1 号段正是 LowCut）。 */
+        if (! processor.getBandEnabled (b))
+            return yOfEq (0.0f);
+
         /* 6 dB/oct 是一阶节：无共振极点，Q 拖拽完全失效。
            此时把节点贴 0 dB，避免"蓝点浮在上面、曲线却不动"的误导。 */
         if (processor.getBandSlope (b) <= 6.001f)
@@ -1532,7 +1683,6 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
             juce::PopupMenu m;
             m.addSectionHeader (Fusion::U8 ("EQ TYPE \u00b7 B") + juce::String (band + 1));
 
-            /* EQ TYPE：默认折叠的子菜单，内含 9 种类型；SSL 模式按原版收敛 */
             const bool sslMode = processor.getMode() == Fusion::Mode::SSL;
 
             juce::Array<int> allowed;
@@ -1544,6 +1694,7 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
                 else                 allowed = { 0 };      // LMF/HMF：固定 BELL
             }
 
+            /* EQ TYPE：默认折叠的子菜单，内含 9 种类型；SSL 模式按原版收敛 */
             juce::PopupMenu typeMenu;
             for (int t = 0; t < (int) Fusion::BandType::Count; ++t)
             {
@@ -1551,18 +1702,15 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
                     continue;
 
                 typeMenu.addItem (t + 1, Fusion::TYPE_LABELS()[(size_t) t], true, t == cur,
-                                  Fusion::makeTypeIcon (t, juce::Colour (0xffe8eef4)));
+                                  cachedTypeIcon (t)->createCopy());
             }
             m.addSubMenu (Fusion::U8 ("EQ TYPE"), typeMenu,
-                          true, Fusion::makeTypeIcon (cur, juce::Colour (0xffe8eef4)));
+                          true, cachedTypeIcon (cur)->createCopy());
 
             /* CHANNEL（Pro-Q 式，仅干净模式）：Stereo / Left / Right / Mid / Side */
             if (processor.getMode() == Fusion::Mode::Clean)
             {
                 static const juce::String chanNames[5] = { "Stereo", "Left", "Right", "Mid", "Side" };
-                static const juce::Colour chanCols [5] = { juce::Colour (0xffffffff), juce::Colour (0xffe5484d),
-                                                           juce::Colour (0xffe8863a), juce::Colour (0xff46c46a),
-                                                           juce::Colour (0xffa879ff) };
                 const int  curChan = processor.getBandChan (band);
                 /* Mono 轨（主输入 < 2 声道）没有立体声拓扑：
                    Left / Right / Mid / Side 全部置灰，只允许 Stereo */
@@ -1572,10 +1720,10 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
 
                 for (int cm = 0; cm < 5; ++cm)
                     chanMenu.addItem (1101 + cm, chanNames[cm], (cm == 0 || stereo), cm == curChan,
-                                      makeChanIcon (cm));
+                                      cachedChanIcon (cm)->createCopy());
 
                 m.addSubMenu (Fusion::U8 ("CHANNEL"), chanMenu, true,
-                              makeChanIcon (curChan));
+                              cachedChanIcon (curChan)->createCopy());
             }
 
             /* 动态压缩不再进右键菜单 —— 悬浮框里已有 DYN 开关 + 四旋钮 */

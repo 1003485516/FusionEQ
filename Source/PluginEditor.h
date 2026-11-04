@@ -59,7 +59,8 @@ public:
 #if JUCE_WINDOWS
         if (name == juce::Font::getDefaultSansSerifFontName()
             || name == "Segoe UI" || name == "Segoe UI Light"
-            || name == "Segoe UI Variable" || name == "Segoe UI Semibold")
+            || name == "Segoe UI Variable" || name == "Segoe UI Semibold"
+            || name.isEmpty())
         {
             auto f2 (f);
             f2.setTypefaceName ("Microsoft YaHei");
@@ -102,14 +103,15 @@ public:
     {
         auto f = LookAndFeel_V4::getTextButtonFont (b, height);
 
+        /* 所有按钮文字强制使用含 CJK 字形的字体（中英文/数字均可正确渲染）。
+           否则默认字体名（空串或某些 LookAndFeel_V4 默认名）会落到无中文字形的回退字体上，
+           导致设置面板等处的「复制 / 退出登录 / 前往官网」等中文整片消失。
+           macOS 上 "Microsoft YaHei" 名命中 getTypefaceForFont 的回退规则映射到苹方。 */
+        f.setTypefaceName ("Microsoft YaHei");
+
         if ((int) b.getProperties().getWithDefault ("modeBtn", 0) != 0)
         {
-            f.setHeight (15.0f);
-            /* 模式按钮显示中文模式名（干净 / 通透 / 硬朗 等）。显式指定跨平台 CJK 字体名，
-               确保中文绝不落到无 CJK 字形的字体而出乱码：Windows 上 Microsoft YaHei 是系统
-               自带中文字体；macOS 上该名命中 getTypefaceForFont 的回退规则映射到苹方，
-               二者均正确渲染。 */
-            f.setTypefaceName ("Microsoft YaHei");
+            f.setHeight (15.0f);   // 模式按钮字号放大
         }
 
         auto* fh = b.getProperties().getVarPointer ("fontH");
@@ -255,57 +257,6 @@ private:
     bool dark = false;
 };
 
-/* ---------------------------------------------------------------------------
-   S / M / L 尺寸切换（分段按钮）：供 Pro Tools 等无法拖拽缩放的宿主使用。
-   点击 = 把整窗 uiScale 切到对应档位（小窗 / 中窗 / 大窗），宿主会跟随重排。
---------------------------------------------------------------------------- */
-class SizeSelector : public juce::Component
-{
-public:
-    std::function<void (int)> onPick;
-
-    SizeSelector()
-    {
-        static const char* labels[3] = { "S", "M", "L" };
-        for (int i = 0; i < 3; ++i)
-        {
-            auto* b = buttons.add (new juce::TextButton (labels[i]));
-            b->setClickingTogglesState (true);
-            b->setRadioGroupId (0x535a7a);          // 互斥高亮
-            b->getProperties().set ("fontH", 13.0);
-            b->onClick = [this, i]() { if (onPick) onPick (i); };
-            addAndMakeVisible (b);
-        }
-    }
-
-    void setActive (int idx)
-    {
-        for (int i = 0; i < 3; ++i)
-            buttons[i]->setToggleState (i == idx, juce::dontSendNotification);
-    }
-
-    void setAccent (juce::Colour c)
-    {
-        for (auto* b : buttons)
-        {
-            b->setColour (juce::TextButton::buttonOnColourId, c);
-            b->setColour (juce::TextButton::textColourOnId,  juce::Colours::white);
-        }
-    }
-
-    void resized() override
-    {
-        auto r = getLocalBounds();
-        const int gap = 3;
-        const int w = (r.getWidth() - 2 * gap) / 3;
-        for (int i = 0; i < 3; ++i)
-            buttons[i]->setBounds (r.getX() + i * (w + gap), r.getY(), w, r.getHeight());
-    }
-
-private:
-    juce::OwnedArray<juce::TextButton> buttons;
-};
-
 class FusionEQAudioProcessorEditor : public juce::AudioProcessorEditor,
                                      private juce::Timer
 {
@@ -390,9 +341,8 @@ private:
        未激活挡住整个 UI 并收集激活码；已激活后透传并保留角落「已激活」徽标。 */
     std::unique_ptr<LicenseOverlay> licenseOverlay;
 
-    /* --- S/M/L 尺寸切换（Pro Tools 等无法拖拽缩放的宿主用） --- */
-    std::unique_ptr<SizeSelector> sizeSelector;
-    int uiSizeIdx = 1;                 // 0=S, 1=M, 2=L（默认中窗）
+    /* --- 界面缩放：档位搬到「设置」面板（齿轮），由 LicenseOverlay 回调触发 --- */
+    int uiSizeIdx = 1;                 // uiScales 索引：0=75%,1=100%,2=125%,3=150%（默认 100%）
     void applyUiScale (float target);  // 把整窗缩放到目标 uiScale（保留当前展开/收起态）
     int  bestSizeIndex (float s) const; // 当前实际缩放 → 最接近的档位（用于高亮）
 

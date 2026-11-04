@@ -3,12 +3,15 @@
    ------------------------------------------------------------------------------
    与「OH-Tai Ji 通道条」同款的激活机制（原生 C++ 面板版）。
 
-   太极原版用 WebView 加载内嵌网页做激活窗；Fusion EQ 的 CMake 关掉了
-   JUCE_WEB_BROWSER，无法复用 WebView，因此这里用原生控件还原同一套表单：
+   太极原版用 WebView 加载内嵌网页做激活窗，并把授权信息收进「设置」页；
+   Fusion EQ 的 CMake 关掉了 JUCE_WEB_BROWSER，无法复用 WebView，因此这里
+   用原生控件还原同一套逻辑：
      · 未激活：整块画布被覆盖层挡住，不可关闭（唯一退出路径是激活成功），
        显示机器码 + 激活码输入框 + 激活按钮 + 前往官网购买/认领链接 + 状态提示。
-     · 已激活：覆盖层不再拦截鼠标（插件照常可用），仅在角落显示
-       「已激活」+ 机器码 + 退出登录。
+     · 已激活：覆盖层不再拦截鼠标（插件照常可用），右上角只留一颗低调的
+       齿轮图标；点击齿轮弹出「设置」面板，授权状态 / 机器码 / 退出登录 /
+       前往官网都在里面——与太极「把授权藏进设置」的思路一致，主界面不再
+       出现割裂的深色徽标框。
 
    授权门控在处理器里（processBlock 未授权整条链静音），这里只负责
    收集激活码 / 触发联网 / 刷新门控与界面。后端逻辑全部走 taiji::LicenseManager，
@@ -33,19 +36,66 @@ public:
        结果回消息线程刷新。未激活时不会发起网络请求。 */
     void startLaunchVerify();
 
+    /* 设置面板里的「界面缩放」回调：由编辑器接线到 applyUiScale / bestSizeIndex。
+       档位标签与缩放值集中在此，作为唯一来源，编辑器侧的 uiScales 与之对应。 */
+    std::function<void (int)> onScalePick;    // 选中第 idx 档 → 编辑器 applyUiScale(uiScales[idx])
+    std::function<int ()>     getScaleIndex;  // 当前高亮档位（编辑器按 uiScale 反查）
+
+    static constexpr int   kScaleCount = 4;                       // 75% / 100% / 125% / 150%
+    static const char*     scaleLabels[kScaleCount];              // 供设置面板显示
+
     void paint (juce::Graphics&) override;
     void resized() override;
+
+    /* 已激活后点右上角齿轮弹出的设置面板（授权信息 / 退出登录 / 前往官网） */
+    class SettingsPanel : public juce::Component
+    {
+    public:
+        SettingsPanel (FusionEQAudioProcessor& p, LicenseOverlay& owner);
+        void refresh();                 // 读本地凭证刷新面板内容
+        void paint (juce::Graphics&) override;
+        void resized() override;
+
+    private:
+        FusionEQAudioProcessor& processor;
+        LicenseOverlay&         owner;
+
+        juce::Label      titleLabel;       // 「设置」
+        juce::TextButton closeButton;      // 「×」关闭
+        juce::Label      sectionLabel;     // 「授权」分组
+        juce::Label      statusLabel;      // 「已激活」/「未激活」
+        juce::Label      machineLabel;     // 「机器码：xxxx」
+        juce::TextButton copyButton;       // 「复制」机器码
+        juce::Label      zoomSectionLabel; // 「界面缩放」分组
+        juce::OwnedArray<juce::TextButton> zoomButtons;  // 75% / 100% / 125% / 150%
+        juce::TextButton logoutButton;     // 「退出登录」
+        juce::HyperlinkButton siteButton;  // 「前往官网购买 / 认领激活码」
+
+        juce::Rectangle<float> cardRect;   // resized 计算，paint 使用
+
+        void setActiveZoom (int idx);      // 高亮当前选中的缩放档
+    };
 
 private:
     void doActivate (const juce::String& code);
     void onResult (const juce::var& res);   // 消息线程：刷新状态 + 提示
     static juce::var makeNetError();        // 线程内异常时构造一个 NETWORK 错误对象
 
+    void openSettings();
+    void closeSettings();
+    void doLogout();
+    void drawCog (juce::Graphics& g, juce::Rectangle<float> r, bool hover);
+
+    // 齿轮悬停时重绘（让 hover 配色即时生效）
+    void mouseEnter (const juce::MouseEvent&) override;
+    void mouseExit  (const juce::MouseEvent&) override;
+
     FusionEQAudioProcessor& processor;
 
     bool active = false;   // 是否已激活（决定是否拦截鼠标）
     bool busy   = false;   // 激活/回验进行中，防重入
     bool opIsActivate = true;   // 当前后台操作是「激活」(true) 还是「启动回验」(false)
+    bool settingsOpen = false;  // 设置面板是否展开
 
     /* —— 锁定态控件（未激活时可见、拦截鼠标）—— */
     juce::Label      titleLabel;        // 「Fusion EQ」
@@ -56,13 +106,10 @@ private:
     juce::HyperlinkButton buyButton;    // 前往官网购买 / 认领
     juce::Label      statusLabel;       // 状态 / 错误提示
 
-    /* —— 已激活态控件（角落徽标）—— */
-    juce::Label      activatedLabel;    // 「已激活」
-    juce::Label      badgeMachineLabel; // 机器码
-    juce::TextButton logoutButton  { "退出登录" };
-
-    /* 已激活徽标卡片矩形（resized 计算，paint 使用） */
-    juce::Rectangle<float> badgeRect;
+    /* —— 已激活态：低调齿轮入口 + 设置面板 —— */
+    juce::TextButton gearButton;        // 透明，仅用于捕获点击；齿轮由 paint 绘制
+    std::unique_ptr<SettingsPanel> settingsPanel;
+    juce::Rectangle<float> gearRect;
 
     /* 配色 */
     static constexpr juce::uint32 kBackdrop = 0xe01d242b;  // 半透明深色背景
