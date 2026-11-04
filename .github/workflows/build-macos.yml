@@ -4,10 +4,9 @@
 #  触发：
 #    - 推送以 v 开头的 tag（如 v1.0.0）→ 自动出包
 #    - 在 Actions 页面点 "Run workflow" 手动触发
-#    - 推送到 main 分支（仅构建校验，也出 dmg）
+#    - 推送到 main 分支（仅构建校验，出 pkg）
 #
 #  产物：
-#    - FusionEQ-1.0.0-macOS.dmg（通用二进制 x86_64 + arm64，拖拽式安装盘）
 #    - FusionEQ-1.0.0-macOS.pkg（通用二进制，AU + AAX + VST3 + Standalone，含系统目录安装位置）
 #    - 在 Actions 的 "Artifacts" 里下载，或在打 tag 时可在 Release 中下载
 #
@@ -20,7 +19,7 @@
 #      APPLE_APP_SPECIFIC_PASSWORD : appleid.apple.com 生成的「专用密码」
 #      APPLE_TEAM_ID               : 10 位开发者团队 ID
 #    配置后：插件会被签名 + 公证 + 装订，用户双击即可安装，无需「仍要打开」。
-#    未配置这些 Secret 时，自动跳过签名，仅产出未签名 dmg（与之前行为一致）。
+#    未配置这些 Secret 时，自动跳过签名，仅产出未签名 pkg（与之前行为一致）。
 #
 #  AAX（Pro Tools）支持（可选）：
 #    AAX SDK 是 Avid 专有授权软件，【禁止公开分发】，因此不进本仓库。
@@ -202,13 +201,8 @@ jobs:
           fi
 
       # =====================================================================
-      #  打包 dmg（复用本地脚本；dmg 内为已签名产物）
-      # =====================================================================
-      - name: Package .dmg
-        run: bash ./installer/make_dmg.sh
-
-      # =====================================================================
       #  打包 pkg（AU + AAX + VST3 + Standalone，带系统目录安装位置）
+      #  注：本仓库只出 pkg（用户要求），不再生成 dmg。
       #  - MACOS_INSTALLER_IDENTITY 为空时跳过 productsign（保留未签名 PKG）
       #  - KEYCHAIN_PATH 由「Import Apple signing certificate」步骤注入环境变量
       # =====================================================================
@@ -219,62 +213,15 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: bash ./installer/make_pkg.sh
 
-      # ---- 签名 dmg（如已配置证书）----
-      - name: Codesign .dmg
-        env:
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-        run: |
-          if [ -z "$KEYCHAIN_PATH" ]; then
-            echo "[-] 未导入证书，跳过 dmg 签名"
-            exit 0
-          fi
-          if [ -n "$MACOS_SIGN_IDENTITY" ]; then
-            IDENTITY="$MACOS_SIGN_IDENTITY"
-          else
-            IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-              | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
-          fi
-          codesign --force --sign "$IDENTITY" \
-            "FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg"
-
-      # ---- 公证 + 装订（需证书 + Apple ID 系列 Secret）----
-      - name: Notarize and staple
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          if [ -z "$APPLE_ID" ] || [ -z "$KEYCHAIN_PATH" ]; then
-            echo "[-] 未配置公证所需 Secret，跳过 notarize"
-            exit 0
-          fi
-          DMG="FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg"
-          xcrun notarytool submit "$DMG" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          xcrun stapler staple "$DMG"
-
-      # ---- 生成 SHA256 校验和（须在公证/装订之后，哈希才准确）----
-      - name: Generate SHA256 checksum
-        run: |
-          DMG="FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg"
-          shasum -a 256 "$DMG" > "$DMG.sha256"
-          echo "=== $DMG.sha256 ==="
-          cat "$DMG.sha256"
-
-      # ---- 上传产物 ----
-      # if: always() 兜底：即便前面某步（如 SHA256）失败，只要 pkg 已生成也照常上传，
-      # 确保总能拿到可安装的包；dmg 缺失时由 if-no-files-found: error 显式报错。
-      - name: Upload artifact (dmg + pkg + checksums)
+      # ---- 上传产物（只上传 pkg）----
+      # if: always() 兜底：即便前面某步失败，只要 pkg 已生成也照常上传，
+      # 确保总能拿到可安装的包；pkg 缺失时由 if-no-files-found: error 显式报错。
+      - name: Upload artifact (pkg + checksum)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: FusionEQ-macOS
           path: |
-            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg
-            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg.sha256
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg.sha256
           if-no-files-found: error
@@ -285,8 +232,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg
-            FusionEQ-${{ steps.ver.outputs.version }}-macOS.dmg.sha256
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg.sha256
         env:
