@@ -206,13 +206,13 @@ juce::var LicenseManager::postJson (const juce::String& action, const juce::var&
             .withNumRedirectsToFollow (5));
 
     if (stream == nullptr)
-        return errObj ("NETWORK", "网络连接失败，请检查网络后重试");
+        return errObj ("NETWORK", juce::String::fromUTF8 ("网络连接失败，请检查网络后重试"));
 
     auto text = stream->readEntireStreamAsString();
     auto parsed = juce::JSON::parse (text);
 
     if (parsed.isVoid() || parsed.getDynamicObject() == nullptr)
-        return errObj ("PARSE", "服务器返回异常，请稍后重试");
+        return errObj ("PARSE", juce::String::fromUTF8 ("服务器返回异常，请稍后重试"));
 
     // 服务器业务错误统一 HTTP 200 + body.code；非 200（如 404/410/409/403/401）也读 body
     return parsed;
@@ -248,12 +248,12 @@ juce::var LicenseManager::verify()
 {
     auto lic = readLicense();
     if (lic.getDynamicObject() == nullptr)
-        return errObj ("NO_LICENSE", "本地无授权，请先激活");
+        return errObj ("NO_LICENSE", juce::String::fromUTF8 ("本地无授权，请先激活"));
 
     auto key = lic["license_key"].toString();
     auto mid = lic["machine_id"].toString();
     if (key.isEmpty() || mid.isEmpty())
-        return errObj ("BAD_REQUEST", "本地授权数据缺失，请重新激活");
+        return errObj ("BAD_REQUEST", juce::String::fromUTF8 ("本地授权数据缺失，请重新激活"));
 
     juce::var body (new juce::DynamicObject());
     body.getDynamicObject()->setProperty ("license_key", key);

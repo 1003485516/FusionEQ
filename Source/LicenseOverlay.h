@@ -102,7 +102,7 @@ private:
     juce::Label      subtitleLabel;     // 「需要激活以继续使用」
     juce::Label      machineLabel;      // 机器码
     juce::TextEditor codeEditor;        // 激活码输入
-    juce::TextButton activateButton { "激活" };
+    juce::TextButton activateButton { juce::String::fromUTF8 ("激活") };
     juce::HyperlinkButton buyButton;    // 前往官网购买 / 认领
     juce::Label      statusLabel;       // 状态 / 错误提示
 
