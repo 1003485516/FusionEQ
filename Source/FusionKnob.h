@@ -709,6 +709,11 @@ public:
 
             param.setValueNotifyingHost (sliderToParam ((float) slider.getValue()));
             updateDisplay();
+
+            /* 仅用户拖动/滚轮会走到这里（宿主自动化与内部回写都有 ignoreCallback 保护）。
+               低切条带用它实现"一拧旋钮就自动接通低切"。 */
+            if (onUserEdit != nullptr)
+                onUserEdit();
         };
 
         param.addListener (this);
@@ -895,6 +900,9 @@ public:
         nameLabel.setAlpha (a);
         valueLabel.setAlpha (a);
     }
+
+    /* 用户手动改值的回调（宿主自动化 / 内部回写不触发） */
+    std::function<void()> onUserEdit;
 
 private:
     bool darkPanel = false;

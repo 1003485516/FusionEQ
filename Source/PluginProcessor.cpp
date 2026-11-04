@@ -63,6 +63,11 @@ void FusionEQAudioProcessor::initModeStates()
             st.freq[b] = bd.freq;
             st.gain[b] = bd.gainDb;
             st.q[b]    = bd.q;
+            /* 低切/高切斜率：必须与参数默认值（12 dB/oct）一致。
+               留 0 会被 restoreModeState 写回参数后钳到 6 dB/oct 一阶，
+               该段没有共振峰 → 竖直拖拽（共振 Q）完全没反应，
+               节点还会被钉在 0 dB 线上，看起来"频点拖不动/不跟 gain"。*/
+            st.slope[b] = 12.0f;
             /* SSL 原版无段开关（常开）；其它模式与 bOn 参数默认一致 = 关 */
             st.on[b]   = ((Fusion::Mode) m) == Fusion::Mode::SSL;
         }
@@ -2121,12 +2126,16 @@ void FusionEQAudioProcessor::loadModeDefaults()
 }
 
 /* ============================ 段状态查询 ============================ */
+/* 注意：以下段状态查询供编辑器/频谱使用，必须直读 APVTS 参数，
+   不能读 bands[] 里的 DSP 平滑状态 —— 后者只在 processBlock 里同步。
+   Logic 等宿主在停止播放/空闲时可能根本不调用 processBlock，读 DSP 状态
+   会得到上一次处理时的旧值（节点全挤在 0 dB、拖动不跟手）。 */
 bool FusionEQAudioProcessor::getBandEnabled (int i) const noexcept
 {
     if (! juce::isPositiveAndBelow (i, Fusion::numBands))
         return false;
 
-    return bands[(size_t) i].on;
+    return apvts.getRawParameterValue (IDs::bOn (i))->load() > 0.5f;
 }
 
 bool FusionEQAudioProcessor::getBandDynOn (int i) const noexcept
@@ -2146,7 +2155,7 @@ float FusionEQAudioProcessor::getBandFreq (int i) const noexcept
     if (! juce::isPositiveAndBelow (i, Fusion::numBands))
         return 1000.0f;
 
-    return bands[(size_t) i].freq.getTargetValue();
+    return apvts.getRawParameterValue (IDs::bFreq (i))->load();
 }
 
 float FusionEQAudioProcessor::getBandGain (int i) const noexcept
@@ -2154,7 +2163,7 @@ float FusionEQAudioProcessor::getBandGain (int i) const noexcept
     if (! juce::isPositiveAndBelow (i, Fusion::numBands))
         return 0.0f;
 
-    return bands[(size_t) i].gain.getTargetValue();
+    return apvts.getRawParameterValue (IDs::bGain (i))->load();
 }
 
 float FusionEQAudioProcessor::getBandQ (int i) const noexcept
@@ -2162,7 +2171,7 @@ float FusionEQAudioProcessor::getBandQ (int i) const noexcept
     if (! juce::isPositiveAndBelow (i, Fusion::numBands))
         return 1.0f;
 
-    return bands[(size_t) i].q.getTargetValue();
+    return apvts.getRawParameterValue (IDs::bQ (i))->load();
 }
 
 int FusionEQAudioProcessor::getBandType (int i) const noexcept
@@ -2170,7 +2179,8 @@ int FusionEQAudioProcessor::getBandType (int i) const noexcept
     if (! juce::isPositiveAndBelow (i, Fusion::numBands))
         return 1;
 
-    return bands[(size_t) i].type;
+    return juce::jlimit (0, (int) Fusion::BandType::Count - 1,
+                         (int) std::round (apvts.getRawParameterValue (IDs::bType (i))->load()));
 }
 
 float FusionEQAudioProcessor::getBandSlope (int i) const noexcept
@@ -2178,7 +2188,8 @@ float FusionEQAudioProcessor::getBandSlope (int i) const noexcept
     if (! juce::isPositiveAndBelow (i, Fusion::numBands))
         return 12.0f;
 
-    return bands[(size_t) i].slopeDb;
+    return juce::jlimit (6.0f, 192.0f,
+                         apvts.getRawParameterValue (IDs::bSlope (i))->load());
 }
 
 /* ============================ 编辑器 ============================ */

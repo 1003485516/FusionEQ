@@ -420,6 +420,10 @@ void FusionEQAudioProcessorEditor::refreshMode()
         hpfStrip.setApi215 (m == Fusion::Mode::API);        // 硬朗：215L 双滤波（LO-PASS/HI-PASS）
     }
     hpfStrip.setStepperVisible (m == Fusion::Mode::Neve);   // 步进蓝钮仅厚实模式；屏幕给干净/温暖/硬朗
+    /* 厚实/硬朗的低切受 hpfOn 门控：拧旋钮即自动接通，避免"旋钮没反应"。
+       SSL/温暖是端点=OUT 的常开结构，不需要。 */
+    hpfStrip.setAutoEngage (m == Fusion::Mode::Neve || m == Fusion::Mode::API,
+                            m == Fusion::Mode::API);
     hpfStrip.setTitlesVisible (m != Fusion::Mode::Neve
                                && m != Fusion::Mode::Manley);   // 厚实/温暖：硬件无丝印标题
     hpfStrip.setHwButtonSkin (m == Fusion::Mode::Neve || m == Fusion::Mode::API);  // 厚实/硬朗：ON 换硬件 HP 按钮

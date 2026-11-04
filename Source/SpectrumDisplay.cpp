@@ -914,6 +914,23 @@ juce::Rectangle<float> SpectrumDisplay::hudRect (int b) const
     if (plotY + plotH - h - 4.0f > plotY + 4.0f)         // 绘图区放得下才钳位（防退化区间）
         by = juce::jlimit (plotY + 4.0f, plotY + plotH - h - 4.0f, by);
 
+    /* 浮窗绝不能压住它自己描述的频点：钳位后若与节点竖向重叠，
+       就横向让开（左右取有空间的一侧）。否则点节点会先被浮窗吃掉，
+       表现为"频点拖不动，得先开关一次频段才能拖"。 */
+    {
+        const float grab = 14.0f;
+
+        if (by < y + grab && by + h > y - grab)
+        {
+            if (x + grab + 8.0f + w <= plotX + plotW - 4.0f)
+                bx = x + grab + 8.0f;
+            else if (x - grab - 8.0f - w >= plotX + 4.0f)
+                bx = x - grab - 8.0f - w;
+
+            bx = juce::jlimit (plotX + 4.0f, plotX + plotW - w - 4.0f, bx);
+        }
+    }
+
     return { bx, by, w, h };
 }
 
@@ -1234,25 +1251,23 @@ void SpectrumDisplay::dragBandQFromY (int b, float yPos)
    其它类型画在增益参数的位置 */
 float SpectrumDisplay::nodeYOf (int b) const
 {
-    const bool on = processor.getBandEnabled (b);
-    const float f = processor.getBandFreq (b);
+    const auto t = (Fusion::BandType) processor.getBandType (b);
 
-    if (on)
+    /* 低切/高切段：竖轴 = 共振 Q（与拖拽共用同一换算） */
+    if (t == Fusion::BandType::LowCut || t == Fusion::BandType::HighCut)
     {
-        const auto t = (Fusion::BandType) processor.getBandType (b);
+        /* 6 dB/oct 是一阶节：无共振极点，Q 拖拽完全失效。
+           此时把节点贴 0 dB，避免"蓝点浮在上面、曲线却不动"的误导。 */
+        if (processor.getBandSlope (b) <= 6.001f)
+            return yOfEq (0.0f);
 
-        if (t == Fusion::BandType::LowCut || t == Fusion::BandType::HighCut)
-        {
-            /* 6 dB/oct 是一阶节：无共振极点，Q 拖拽完全失效。
-               此时把节点贴 0 dB，避免"蓝点浮在上面、曲线却不动"的误导。 */
-            if (processor.getBandSlope (b) <= 6.001f)
-                return yOfEq (0.0f);
-
-            return yOfEq (cutQToDispDb (processor.getBandQ (b)));
-        }
+        return yOfEq (cutQToDispDb (processor.getBandQ (b)));
     }
 
-    return yOfEq (on ? processor.getBandGain (b) : 0.0f);
+    /* 关闭的段也必须画在它真实的增益位置：
+       以前关闭时强行贴 0 dB，拖动只能改参数、节点一动不动，
+       看起来就是"能拖但频点不跟 gain 走"。 */
+    return yOfEq (processor.getBandGain (b));
 }
 
 int SpectrumDisplay::bandAt (juce::Point<float> pos, float radius) const
@@ -1426,9 +1441,11 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
                 return;
             }
 
-            /* 悬浮窗主体内（非按钮/旋钮处）：只保持选中当前频点，
-               不落到下面的节点抓取 / 空白生成逻辑 —— 避免误触其它频点 */
-            if (hudRect (hb).contains (pos))
+            /* 悬浮窗主体内（非按钮/旋钮处）：只保持选中当前频点。
+               但若鼠标正压在频点抓取圈内，必须让位给频点拖拽 ——
+               浮窗在窄窗口里会被钳到节点上方/覆盖节点，抢走 mouseDown
+               就会表现为"频点怎么都拖不动"。 */
+            if (hudRect (hb).contains (pos) && bandAt (pos, 10.0f) < 0)
             {
                 selectedBand = hb;
                 repaint();
@@ -1647,6 +1664,17 @@ void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
 
     activeBand   = hit;
     selectedBand = hit;
+
+    /* Pro-Q 式：直接抓一个已关闭的频点 = 顺手把它打开。
+       否则拖动只改参数，段仍是旁通，听感与节点都"没反应"。 */
+    if (! processor.getBandEnabled (hit))
+        if (auto* on = processor.apvts.getParameter (IDs::bOn (hit)))
+        {
+            on->beginChangeGesture();
+            on->setValueNotifyingHost (1.0f);
+            on->endChangeGesture();
+        }
+
     beginEdit (hit);
     repaint();
 }

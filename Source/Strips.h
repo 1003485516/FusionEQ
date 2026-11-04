@@ -1290,12 +1290,22 @@ public:
         addAndMakeVisible (*freqKnob);
         freqKnob->setVisible (false);
 
+        /* 低切旋钮一被手动拧动就自动接通低切：
+           厚实/硬朗模式的快照默认 hpfOn=false，参数不动则旋钮"拧了没反应"，
+           用户会以为旋钮坏了。SSL/温暖不在此列（它们是端点=OUT 的常开结构）。 */
+        hpKnob->onUserEdit   = [this] { if (autoHpf) engage (IDs::hpfOn); };
+        lpKnob->onUserEdit   = [this] { if (autoLpf) engage (IDs::lpOn); };
+        freqKnob->onUserEdit = [this] { if (autoHpf) engage (IDs::hpfOn); };
+
         /* 斜率选择：点击弹出菜单（12/24/36 dB/oct，当前项打勾） */
         slopeButton.getProperties().set ("fontH", 12);
         slopeButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff20262c));
         slopeButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffc7d0d8));
         slopeButton.onClick = [this]()
         {
+            if (autoHpf)
+                engage (IDs::hpfOn);      // 选斜率 = 在用低切，自动接通
+
             const int cur = juce::jlimit (0, 2, juce::roundToInt (
                 apvts->getRawParameterValue (IDs::hpfSlope)->load()));
 
@@ -1780,6 +1790,13 @@ public:
         repaint();
     }
 
+    /* 低切是否"一拧即接通"（厚实 1073 / 硬朗 215L：频点/HP 旋钮受 hpfOn 门控） */
+    void setAutoEngage (bool hp, bool lp)
+    {
+        autoHpf = hp;
+        autoLpf = lp;
+    }
+
     /* 硬朗模式：低切卡换成 API 215L 双滤波（LO-PASS + HI-PASS 橙芯步进钮 +
        SC/ON 硬件开关）。滤波走 SSL 的 filtHp/filtLp 参数（复用 12 dB/oct 链），
        档位离散吸附；ON 仍绑定 hpfOn（编辑器里的 ButtonAttachment 不变） */
@@ -1866,7 +1883,22 @@ private:
     float lastHpHz = -1.0f, lastLpHz = -1.0f;
     bool titlesVisible = true;                         // 条带标题显隐（Neve 隐藏）
     bool stepper = false;                              // 步进钮是否随硬朗模式显示
+    bool autoHpf = false, autoLpf = false;             // 拧低切钮即自动接通（厚实/硬朗）
     int  lastSlope = 0;
+
+    /* 把某个 bool 参数强制置 ON（已 ON 则不动），带完整宿主手势 */
+    void engage (const juce::String& id)
+    {
+        if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts->getParameter (id)))
+        {
+            if (p->get() < 0.5f)
+            {
+                p->beginChangeGesture();
+                p->setValueNotifyingHost (1.0f);
+                p->endChangeGesture();
+            }
+        }
+    }
     int  lastFreq  = -1;
     juce::Colour accent { 0xff0e9bd6 };
     bool lastOnState = true;
