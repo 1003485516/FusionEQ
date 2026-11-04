@@ -98,7 +98,7 @@ SRC_SIZE="$(( ${SRC_SIZE:-10} + 40 ))"
 [ "$SRC_SIZE" -lt 80 ] && SRC_SIZE=80
 
 hdiutil create -size "${SRC_SIZE}m" -volname "Fusion EQ $VERSION" \
-    -fs HFS+ -format UDRW "$RW_DMG"
+    -fs HFS+ "$RW_DMG"
 
 # 挂载（禁用自动打开与 Finder 浏览）
 MOUNT_INFO="$(hdiutil attach -nobrowse -noautoopen "$RW_DMG")"

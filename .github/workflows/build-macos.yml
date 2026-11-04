@@ -213,6 +213,7 @@ jobs:
       #  - KEYCHAIN_PATH 由「Import Apple signing certificate」步骤注入环境变量
       # =====================================================================
       - name: Package .pkg
+        if: always()
         env:
           MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
           VERSION: ${{ steps.ver.outputs.version }}
