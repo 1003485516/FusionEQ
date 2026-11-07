@@ -131,6 +131,12 @@ jobs:
             echo "HAS_AAX=0" >> "$GITHUB_ENV"
           fi
 
+      # ---- JUCE 7.0.12 兼容 macOS 15 SDK ----
+      # juceaide 会在 CMake configure 阶段编译，必须在 Configure 之前打补丁。
+      # 补丁幂等，对已打过补丁的缓存 JUCE 目录会自动跳过。
+      - name: Patch JUCE 7.0.12 for macOS 15 SDK
+        run: python3 installer/patch_juce_macos15.py "$JUCE_DIR"
+
       # ---- 配置（通用二进制；有 SDK 时附带 AAX）----
       - name: Configure (CMake)
         run: |
