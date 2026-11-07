@@ -120,6 +120,38 @@ public:
 
         return f;
     }
+
+    /* 类型按钮的「▾」下拉指示：矢量三角自绘。
+       —— 不能再用字体里的 U+25BE：雅黑（以及苹方）都没有这个字形，
+          渲染出来就是豆腐块。带 "caret" 属性的按钮才画。 */
+    void drawButtonText (juce::Graphics& g, juce::TextButton& button,
+                         bool shouldDrawButtonAsHighlighted,
+                         bool shouldDrawButtonAsDown) override
+    {
+        juce::LookAndFeel_V4::drawButtonText (g, button, shouldDrawButtonAsHighlighted,
+                                              shouldDrawButtonAsDown);
+
+        if (! (bool) button.getProperties().getWithDefault ("caret", false))
+            return;
+
+        const auto font  = getTextButtonFont (button, button.getHeight());
+        const auto textW = font.getStringWidthFloat (button.getButtonText());
+        const auto r     = button.getLocalBounds().toFloat();
+
+        const float cx = r.getCentreX() + textW * 0.5f + 5.0f;   // 紧跟文字右侧
+        const float cy = r.getCentreY() + 1.5f;
+
+        juce::Path tri;
+        tri.addTriangle (cx - 3.0f, cy - 2.0f,
+                         cx + 3.0f, cy - 2.0f,
+                         cx,        cy + 2.0f);
+
+        g.setColour (button.findColour (button.getToggleState()
+                                            ? juce::TextButton::textColourOnId
+                                            : juce::TextButton::textColourOffId)
+                            .withMultipliedAlpha (button.isEnabled() ? 1.0f : 0.5f));
+        g.fillPath (tri);
+    }
 };
 
 /* ---------------------------------------------------------------------------

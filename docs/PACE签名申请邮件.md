@@ -30,14 +30,14 @@ I would like to request the PACE Eden signing tools for my AAX Native plug-in.
 | Category | EQ (`ePlugInCategory_EQ`) |
 | Manufacturer code | `0x4675736e` |
 | Product code | `0x46754551` |
-| Version | 1.0.2 |
+| Version | 1.0.34 |
 | Channels | Stereo / Mono-Mono, with per-band stereo & mid-side modes |
 
 Fusion EQ is a six-band EQ offering six analog-inspired processing modes: Clean (digital), Manley-style tube, Pultec EQP-1A style passive, SSL, Neve and API. It features a real-time spectrum analyser with draggable frequency nodes, per-band dynamics, a fixed 80 Hz high-pass filter, and a dedicated AIR band operating above 11 kHz.
 
 **What has been completed**
 
-1. Registered as an AAX Developer and downloaded the AAX SDK (version 2.8.0).
+1. Registered as an AAX Developer and downloaded the AAX SDK (version 2.10).
 2. Built the plug-in successfully as AAX Native for Windows x64.
 3. Tested the unsigned plug-in in Pro Tools Developer.
 
@@ -78,13 +78,13 @@ Best regards,
 - 格式：AAX Native 64 位（Windows），同时发行 VST3
 - 分类：EQ（ePlugInCategory_EQ）
 - 厂商码：0x4675736e；产品码：0x46754551
-- 版本：1.0.2
+- 版本：1.0.34
 
 Fusion EQ 是一款六段均衡器，提供六种音色模式：干净（数字）、Manley 风格电子管、Pultec EQP-1A 风格无源、SSL、Neve 与 API。功能包括带可拖拽频点的实时频谱显示、每段独立动态处理、固定 80 Hz 低切，以及作用于 11 kHz 以上的独立 AIR 高频旋钮。
 
 **已完成**
 
-1. 已注册 AAX 开发者并下载 AAX SDK 2.8.0
+1. 已注册 AAX 开发者并下载 AAX SDK 2.10
 2. 已成功编译出 Windows x64 的 AAX Native 插件
 3. 已在 Pro Tools Developer 中测试未签名插件
 

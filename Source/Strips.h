@@ -471,7 +471,10 @@ public:
 
         sub.setText (nameCn + U8 (" \u00b7 ") + juce::String (idx + 1), juce::dontSendNotification);
         sub.setJustificationType (juce::Justification::centred);
-        sub.setFont (juce::Font (10.0f, juce::Font::bold));
+        /* 副标题含中文（低频 / 中低频 …）：显式指定带 CJK 字形的字体。
+           默认无衬线在本工程里会解析到纯拉丁字体（Segoe UI / .SF），
+           中文会渲染成空心豆腐块（1.0.34 修复）。 */
+        sub.setFont (juce::Font (juce::String ("Microsoft YaHei"), 10.0f, juce::Font::bold));
         sub.setColour (juce::Label::textColourId, juce::Colour (0xff8b949c));
         addAndMakeVisible (sub);
 
@@ -523,7 +526,8 @@ public:
            未按 = 原版搁架曲线；按下 = 钟形（亮灯素材）。Q 固定（旋钮隐藏，参数保持默认）。 */
         curveSymbol.setText (Fusion::U8 ("\u2229"), juce::dontSendNotification);
         curveSymbol.setJustificationType (juce::Justification::centred);
-        curveSymbol.setFont (juce::Font (17.0f, juce::Font::bold));
+        /* ∩ (U+2229)：默认无衬线没有该字形 → 豆腐块，显式用雅黑（含数学符号） */
+        curveSymbol.setFont (juce::Font (juce::String ("Microsoft YaHei"), 17.0f, juce::Font::bold));
         curveSymbol.setColour (juce::Label::textColourId, juce::Colour (0xff5c666f));
         addAndMakeVisible (curveSymbol);
 
@@ -634,14 +638,18 @@ public:
         updateTypeLabel();
     }
 
-    /* 类型按钮文字：锁定类型无 ▾（不是菜单，是铭牌） */
+    /* 类型按钮文字：锁定类型无 ▾（不是菜单，是铭牌）
+       ▾ 不再拼进字符串 —— 雅黑 / 苹方都没有 U+25BE 字形，会渲染成豆腐块；
+       改为给按钮打 "caret" 属性，由 FusionLook::drawButtonText 矢量绘制。 */
     void updateTypeLabel()
     {
         const auto t = juce::jlimit (0, (int) Fusion::BandType::Count - 1, juce::roundToInt (
             proc.apvts.getRawParameterValue (IDs::bType (index))->load()));
 
-        typeButton.setButtonText (TYPE_LABELS()[(size_t) t] + (menuLocked ? juce::String() : U8 (" \u25be")));
+        typeButton.setButtonText (TYPE_LABELS()[(size_t) t]);
+        typeButton.getProperties().set ("caret", ! menuLocked);
         typeButton.setInterceptsMouseClicks (! menuLocked, false);
+        typeButton.repaint();
     }
 
     /* SSL 4000 LF 曲线按钮模式：隐藏 Q 旋钮与类型铭牌，显示 ∩ + 小方块按钮 */
@@ -1495,7 +1503,8 @@ public:
             g.drawText ("FILTER", r.removeFromTop (14.0f), juce::Justification::centred);
 
             g.setColour (juce::Colour (0xffa8b2bb));
-            g.setFont (juce::Font (10.0f, juce::Font::bold));
+            /* 中文「滤波」+ 默认无衬线没有 CJK 字形 → 显式雅黑，否则豆腐块 */
+            g.setFont (juce::Font (juce::String ("Microsoft YaHei"), 10.0f, juce::Font::bold));
             g.drawText (U8 ("\u6ee4\u6ce2 \u00b7 HP/LP"), r.removeFromTop (12.0f), juce::Justification::centred);
             return;
         }
@@ -1507,7 +1516,8 @@ public:
             g.drawText ("LOW CUT", r.removeFromTop (14.0f), juce::Justification::centred);
 
             g.setColour (juce::Colour (0xff8b949c));
-            g.setFont (juce::Font (10.0f, juce::Font::bold));
+            /* 中文「低切」同上：显式雅黑，避免豆腐块 */
+            g.setFont (juce::Font (juce::String ("Microsoft YaHei"), 10.0f, juce::Font::bold));
             g.drawText (U8 ("\u4f4e\u5207 \u00b7 HPF"), r.removeFromTop (12.0f), juce::Justification::centred);
         }
 

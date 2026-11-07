@@ -58,6 +58,16 @@ FusionEQAudioProcessorEditor::FusionEQAudioProcessorEditor (FusionEQAudioProcess
        所以必须装在这里，中文才不会因为 Segoe UI 缺字形而整段消失 */
     juce::LookAndFeel::setDefaultLookAndFeel (&fusionLook);
 
+    /* ⚠️ 装上 FusionLook 后必须清一次字体缓存（1.0.34 修复 Pro Tools 豆腐块）：
+       JUCE 的 TypefaceCache 只按「字体名 + 字重」缓存，命中就直接返回，
+       根本不会再问 LookAndFeel。AAX 宿主（Pro Tools）在 createEditor 之前
+       已经用默认 LookAndFeel 渲染过带默认无衬线（"<Sans-Serif>"）的界面元素，
+       于是纯拉丁字形（Segoe UI / .SF）被缓存下来；此后本工程所有走默认字体
+       的中文（低频/中高频…）和 ∩ 全都命中这份缓存 → 豆腐块。
+       VST3 / AU 宿主没有这个前置渲染，所以只有 Pro Tools 里能看到。
+       清空后这些字体重新经 FusionLook 解析到雅黑 / 苹方，中文恢复正常。 */
+    juce::Typeface::clearTypefaceCache();
+
     /* ---- 顶栏 ---- */
     /* OH Audio 品牌徽标：编译期嵌入（已裁掉底部水印、平滑抠透明背景），运行时零文件依赖 */
     {
