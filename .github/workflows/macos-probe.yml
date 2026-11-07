@@ -1,0 +1,8 @@
+name: macOS Probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: macos-14
+    steps:
+      - run: uname -a
