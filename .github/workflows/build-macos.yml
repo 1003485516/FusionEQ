@@ -22,6 +22,7 @@
 #      APPLE_ID                    : Apple ID 邮箱
 #      APPLE_APP_SPECIFIC_PASSWORD : appleid.apple.com 生成的「App 专用密码」
 #      APPLE_TEAM_ID               : 10 位 Team ID（developer.apple.com/account 会员页可见）
+#    创建证书时若询问 Certificate Intermediary，选 G2 Sub-CA（旧 G1 2027-02-01 失效）。
 #    配置后：插件 codesign → PKG productsign → notarytool 公证 → stapler 装订，
 #            用户双击直接安装，不再出现「无法打开 / 已损坏 / 仍要打开」。
 #    证书类 Secret 缺失时自动跳过签名；公证凭证缺失时自动跳过公证（仍出未签名 pkg）。
@@ -179,6 +180,13 @@ jobs:
           echo -n "$CERT_P12" | openssl base64 -d -A -out "$RUNNER_TEMP/cert.p12"
           security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A \
             -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          # 补齐证书链：Developer ID G2 中间 CA（旧 G1 将于 2027-02-01 失效）
+          # 下载失败不影响后续流程，runner 系统钥匙串里通常已自带
+          if curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+               "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer"; then
+            security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+              -k "$KEYCHAIN_PATH" -T /usr/bin/codesign 2>/dev/null || true
+          fi
           security list-keychains -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s \
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
