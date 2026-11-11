@@ -19,7 +19,7 @@
 // 兜底值，正常情况下由 CMake 注入 ${PROJECT_VERSION}。
 // 只有脱离 CMake 单独编译某个源文件时才会用到，务必跟 CMakeLists 同步。
 #ifndef OHAUDIO_PRODUCT_VERSION
- #define OHAUDIO_PRODUCT_VERSION "1.0.15"
+ #define OHAUDIO_PRODUCT_VERSION "1.0.35"
 #endif
 
 namespace taiji
