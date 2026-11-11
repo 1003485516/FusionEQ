@@ -73,6 +73,17 @@ fi
 WORK="$(pwd)/pace_work"
 rm -rf "$WORK"
 mkdir -p "$WORK/FusionEQ_artefacts"
+# 校验传输完整性（与 zip 同目录的 .sha256 由 CI 生成）
+if [ -f "$ZIP.sha256" ]; then
+  echo "[*] 校验下载文件 SHA256 ..."
+  EXPECT=$(awk '{print $1}' "$ZIP.sha256")
+  ACTUAL=$(shasum -a 256 "$ZIP" | awk '{print $1}')
+  if [ "$EXPECT" != "$ACTUAL" ]; then
+    echo "[X] SHA256 不一致（期望 $EXPECT，实际 $ACTUAL），请重新下载"
+    exit 1
+  fi
+  echo "    [+] OK $ACTUAL"
+fi
 echo "[*] 解压 $ZIP ..."
 ditto -x -k "$ZIP" "$WORK/FusionEQ_artefacts"
 ART="$WORK/FusionEQ_artefacts/Release"
@@ -86,7 +97,25 @@ done
 AAX="$ART/AAX/$APP_NAME.aaxplugin"
 echo "[*] AAX: $AAX"
 
-# ---- 2. 确认 AAX 是未签名状态（wraptool 要求干净的输入） ----
+# ---- 2a. 确认其余三个组件的 Apple 签名在跨机器传输后仍有效 ----
+echo "[*] 校验 VST3 / AU / Standalone 的 Apple 签名 ..."
+for F in VST3 AU Standalone; do
+  case "$F" in
+    VST3) EXT="vst3" ;;
+    AU)   EXT="component" ;;
+    Standalone) EXT="app" ;;
+  esac
+  COMP="$ART/$F/$APP_NAME.$EXT"
+  if ! codesign --verify --deep --strict --verbose=1 "$COMP" 2>&1; then
+    echo "[X] $F 的 Apple 签名在解压后失效，不能继续公证。"
+    echo "    可用本机 Developer ID Application 身份重签："
+    echo "    codesign --force --options runtime --timestamp --sign \"$PACE_SIGNID\" \"$COMP\""
+    exit 1
+  fi
+  echo "    [+] $F 签名有效"
+done
+
+# ---- 2b. 确认 AAX 是未签名状态（wraptool 要求干净的输入） ----
 if codesign -dv "$AAX" >/dev/null 2>&1; then
   echo "[!] AAX 已带 Apple 签名，先移除（wraptool 会自己重新 codesign）..."
   codesign --remove-signature "$AAX"
