@@ -12,10 +12,12 @@
 #
 #  签名 / 公证（正式分发必须；Apple Developer Program 生效后配置）：
 #    在仓库 Settings → Secrets and variables → Actions 中配置：
-#      MACOS_CERT_P12              : 把「Developer ID Application」+「Developer ID Installer」
-#                                    两张证书连同私钥一起导出为同一个 .p12，再转单行 base64
+#      MACOS_CERT_P12              : 「Developer ID Application」的 .p12（含私钥），转单行 base64
 #                                    （openssl base64 -A -in cert.p12 -out cert.txt）
+#      MACOS_CERT_P12_INSTALLER    : 「Developer ID Installer」的 .p12（含私钥），同样转 base64。
+#                                    若一个 .p12 已同时含两张证书，此项留空即可。
 #      MACOS_CERT_PASSWORD         : .p12 的导出密码
+#      MACOS_CERT_PASSWORD_INSTALLER : 第二份 p12 的密码（可选，留空则复用上面那个）
 #      MACOS_SIGN_IDENTITY         : 例 "Developer ID Application: Ling Chen (XXXXXXXXXX)"
 #                                    （留空则自动探测钥匙串里第一张 Developer ID Application）
 #      MACOS_INSTALLER_IDENTITY    : 例 "Developer ID Installer: Ling Chen (XXXXXXXXXX)"
@@ -162,10 +164,12 @@ jobs:
       # =====================================================================
       #  签名（仅当配置了证书 Secret 时执行；否则步骤内部自动跳过）
       # =====================================================================
-      - name: Import Apple signing certificate
+      - name: Import Apple signing certificates
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_P12_INSTALLER: ${{ secrets.MACOS_CERT_P12_INSTALLER }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          CERT_PASSWORD_INSTALLER: ${{ secrets.MACOS_CERT_PASSWORD_INSTALLER }}
         run: |
           if [ -z "$CERT_P12" ]; then
             echo "[-] MACOS_CERT_P12 未配置，跳过签名"
@@ -176,10 +180,23 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          # 用 openssl 解码（macOS 自带 base64 是 BSD 版，--decode 兼容性不稳）
-          echo -n "$CERT_P12" | openssl base64 -d -A -out "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A \
-            -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          import_one() {
+            local data="$1" pass="$2" tag="$3" label="$4"
+            local file="$RUNNER_TEMP/import_${tag}.p12"
+            # 用 openssl 解码（macOS 自带 base64 是 BSD 版，--decode 兼容性不稳）
+            # tr 去掉可能存在的换行，避免 Secret 里的折行破坏 base64
+            printf '%s' "$data" | tr -d '\r\n' | openssl base64 -d -A -out "$file"
+            security import "$file" -P "$pass" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            rm -f "$file"
+            echo "[+] 已导入 $label 证书"
+          }
+          import_one "$CERT_P12" "$CERT_PASSWORD" app "Developer ID Application"
+          if [ -n "$CERT_P12_INSTALLER" ]; then
+            P2="${CERT_PASSWORD_INSTALLER:-$CERT_PASSWORD}"
+            import_one "$CERT_P12_INSTALLER" "$P2" installer "Developer ID Installer"
+          fi
+
           # 补齐证书链：Developer ID G2 中间 CA（旧 G1 将于 2027-02-01 失效）
           # 下载失败不影响后续流程，runner 系统钥匙串里通常已自带
           if curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
@@ -190,7 +207,6 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s \
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          rm -f "$RUNNER_TEMP/cert.p12"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Codesign binaries (VST3 / AU / Standalone)
