@@ -10,16 +10,21 @@
 #    - FusionEQ-1.0.0-macOS.pkg（通用二进制，AU + AAX + VST3 + Standalone，含系统目录安装位置）
 #    - 在 Actions 的 "Artifacts" 里下载，或在打 tag 时可在 Release 中下载
 #
-#  签名 / 公证（可选，强烈建议用于正式分发）：
+#  签名 / 公证（正式分发必须；Apple Developer Program 生效后配置）：
 #    在仓库 Settings → Secrets and variables → Actions 中配置：
-#      MACOS_CERT_P12              : Developer ID Application 证书导出的 .p12，转为 base64
-#                                    （本地：openssl base64 -in cert.p12 -out cert.txt，贴内容）
+#      MACOS_CERT_P12              : 把「Developer ID Application」+「Developer ID Installer」
+#                                    两张证书连同私钥一起导出为同一个 .p12，再转单行 base64
+#                                    （openssl base64 -A -in cert.p12 -out cert.txt）
 #      MACOS_CERT_PASSWORD         : .p12 的导出密码
-#      APPLE_ID                    : 你的 Apple ID（邮箱）
-#      APPLE_APP_SPECIFIC_PASSWORD : appleid.apple.com 生成的「专用密码」
-#      APPLE_TEAM_ID               : 10 位开发者团队 ID
-#    配置后：插件会被签名 + 公证 + 装订，用户双击即可安装，无需「仍要打开」。
-#    未配置这些 Secret 时，自动跳过签名，仅产出未签名 pkg（与之前行为一致）。
+#      MACOS_SIGN_IDENTITY         : 例 "Developer ID Application: Ling Chen (XXXXXXXXXX)"
+#                                    （留空则自动探测钥匙串里第一张 Developer ID Application）
+#      MACOS_INSTALLER_IDENTITY    : 例 "Developer ID Installer: Ling Chen (XXXXXXXXXX)"
+#      APPLE_ID                    : Apple ID 邮箱
+#      APPLE_APP_SPECIFIC_PASSWORD : appleid.apple.com 生成的「App 专用密码」
+#      APPLE_TEAM_ID               : 10 位 Team ID（developer.apple.com/account 会员页可见）
+#    配置后：插件 codesign → PKG productsign → notarytool 公证 → stapler 装订，
+#            用户双击直接安装，不再出现「无法打开 / 已损坏 / 仍要打开」。
+#    证书类 Secret 缺失时自动跳过签名；公证凭证缺失时自动跳过公证（仍出未签名 pkg）。
 #
 #  AAX（Pro Tools）支持（可选）：
 #    AAX SDK 是 Avid 专有授权软件，【禁止公开分发】，因此不进本仓库。
@@ -170,7 +175,8 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          echo -n "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          # 用 openssl 解码（macOS 自带 base64 是 BSD 版，--decode 兼容性不稳）
+          echo -n "$CERT_P12" | openssl base64 -d -A -out "$RUNNER_TEMP/cert.p12"
           security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A \
             -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
@@ -194,17 +200,22 @@ jobs:
             IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
               | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
           fi
+          if [ -z "$IDENTITY" ]; then
+            echo "[X] 未找到 Developer ID Application 证书，请检查 MACOS_CERT_P12 或设置 MACOS_SIGN_IDENTITY"
+            exit 1
+          fi
           echo "[*] Signing identity: $IDENTITY"
           ART=build_mac/FusionEQ_artefacts/Release
-          codesign --force --options runtime --timestamp \
-            --sign "$IDENTITY" "$ART/VST3/Fusion EQ.vst3"
-          codesign --force --options runtime --timestamp \
-            --sign "$IDENTITY" "$ART/AU/Fusion EQ.component"
-          codesign --force --options runtime --timestamp \
-            --sign "$IDENTITY" "$ART/Standalone/Fusion EQ.app"
+          # hardened runtime + 安全时间戳是公证的硬性要求，缺一不可
+          SIGN=(codesign --force --options runtime --timestamp \
+                --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY")
+          "${SIGN[@]}" "$ART/VST3/Fusion EQ.vst3"
+          "${SIGN[@]}" "$ART/AU/Fusion EQ.component"
+          "${SIGN[@]}" "$ART/Standalone/Fusion EQ.app"
+          # 注意：这里只做 Apple 签名。AAX 的 PACE/wraptool 签名是另一套，
+          # 且必须在 Apple codesign 之后进行，CI 里没有 PACE 工具链。
           if [ -d "$ART/AAX/Fusion EQ.aaxplugin" ]; then
-            codesign --force --options runtime --timestamp \
-              --sign "$IDENTITY" "$ART/AAX/Fusion EQ.aaxplugin"
+            "${SIGN[@]}" "$ART/AAX/Fusion EQ.aaxplugin"
           fi
 
       # =====================================================================
@@ -219,6 +230,47 @@ jobs:
           MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: bash ./installer/make_pkg.sh
+
+      # =====================================================================
+      #  公证（Notarization）+ 装订（Staple）
+      #  productsign 后的 PKG 提交 Apple 公证服务，通过后把票据装订进 PKG，
+      #  这样用户离线双击安装也能通过 Gatekeeper，不再提示「已损坏 / 无法打开」。
+      #  凭证未配齐时跳过，仍产出未公证 PKG（保持旧行为）。
+      # =====================================================================
+      - name: Notarize & staple PKG
+        if: always()
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          PKG="FusionEQ-${VERSION}-macOS.pkg"
+          if [ ! -f "$PKG" ]; then
+            echo "[*] $PKG 不存在（前面构建可能失败），跳过公证"
+            exit 0
+          fi
+          if [ -z "${MACOS_INSTALLER_IDENTITY:-}" ] || \
+             [ -z "${APPLE_ID:-}" ] || \
+             [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] || \
+             [ -z "${APPLE_TEAM_ID:-}" ]; then
+            echo "[*] 公证凭证未配齐，跳过 notarize（PKG 未公证）"
+            exit 0
+          fi
+          echo "[*] 提交公证，最长等待 30 分钟 ..."
+          xcrun notarytool submit "$PKG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+          echo "[*] 装订公证票据 ..."
+          xcrun stapler staple "$PKG"
+          echo "[*] Gatekeeper 校验 ..."
+          spctl -a -vvv -t install "$PKG" || true
+          echo "[*] staple 会改变 PKG 内容，重新计算 SHA256 ..."
+          shasum -a 256 "$PKG" > "$PKG.sha256"
+          cat "$PKG.sha256"
 
       # ---- 上传产物（只上传 pkg）----
       # if: always() 兜底：即便前面某步失败，只要 pkg 已生成也照常上传，

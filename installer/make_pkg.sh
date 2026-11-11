@@ -148,7 +148,11 @@ fi
 # ---- 可选：对 PKG 进行 productsign（需 Developer ID Installer 证书）----
 if [ -n "${MACOS_INSTALLER_IDENTITY:-}" ] && [ -n "${KEYCHAIN_PATH:-}" ]; then
     echo "[*] 使用身份 '$MACOS_INSTALLER_IDENTITY' 对 PKG 进行 productsign ..."
-    if productsign --sign "$MACOS_INSTALLER_IDENTITY" "$PKG" "$PKG.signed"; then
+    SIGN_ARGS=(--sign "$MACOS_INSTALLER_IDENTITY")
+    if [ -n "${KEYCHAIN_PATH:-}" ]; then
+        SIGN_ARGS+=(--keychain "$KEYCHAIN_PATH")
+    fi
+    if productsign "${SIGN_ARGS[@]}" "$PKG" "$PKG.signed"; then
         mv "$PKG.signed" "$PKG"
         echo "    [+] PKG 已签名"
     else
@@ -167,4 +171,5 @@ rm -rf "$PKGDIR" 2>/dev/null || true
 echo
 echo "=== 已生成: $PKG ==="
 echo "安装：双击 PKG 按向导即可（AU 进 Logic/GarageBand，AAX 进 Pro Tools）。"
-echo "未签名 PKG 若被拦截：在 系统设置→隐私与安全性 点『仍要打开』，或 sudo installer -pkg \"$PKG\" -target /"
+echo "提示：签名 + 公证（notarytool/stapler）由 CI 工作流在打包后完成，凭证配齐即为可双击安装的正式版。"
+echo "未签名/未公证 PKG 若被拦截：在 系统设置→隐私与安全性 点『仍要打开』，或 sudo installer -pkg \"$PKG\" -target /"
