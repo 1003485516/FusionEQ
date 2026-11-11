@@ -4,6 +4,10 @@
 #  触发：
 #    - 推送以 v 开头的 tag（如 v1.0.0）→ 自动出包
 #    - 在 Actions 页面点 "Run workflow" 手动触发
+#        · pace_ready=false（默认）：完整签名 + 公证 PKG
+#        · pace_ready=true ：只产出 FusionEQ-PACE-ready.zip（AAX 未签名，
+#          供 Mac 本机用 wraptool 补 PACE 签名后重新打包并重新公证，见
+#          installer/mac_pace_finish.sh）
 #    - 推送到 main 分支（仅构建校验，出 pkg）
 #
 #  产物：
@@ -53,6 +57,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      pace_ready:
+        description: '只产出 PACE 待签名产物（AAX 保持未 codesign，供 Mac 本机 wraptool 签名）'
+        type: boolean
+        default: false
 
 # 允许上传产物；打 tag 时发布到 Release 需要写权限
 permissions:
@@ -212,6 +221,7 @@ jobs:
       - name: Codesign binaries (VST3 / AU / Standalone)
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          PACE_READY: ${{ inputs.pace_ready }}
         run: |
           if [ -z "$KEYCHAIN_PATH" ]; then
             echo "[-] 未导入证书，跳过 codesign"
@@ -236,10 +246,18 @@ jobs:
           "${SIGN[@]}" "$ART/VST3/Fusion EQ.vst3"
           "${SIGN[@]}" "$ART/AU/Fusion EQ.component"
           "${SIGN[@]}" "$ART/Standalone/Fusion EQ.app"
-          # 注意：这里只做 Apple 签名。AAX 的 PACE/wraptool 签名是另一套，
-          # 且必须在 Apple codesign 之后进行，CI 里没有 PACE 工具链。
+          # ★ AAX 由 PACE wraptool 签名：wraptool 内部会调用 Apple codesign，
+          #   用 --signid 指定的 Developer ID Application 身份完成 Apple 签名 + PACE 签名。
+          #   因此 AAX 绝不能在此预先 codesign（否则签名会被覆盖/冲突）。
+          #   默认流程里 CI 没有 PACE 工具链，只能先做 Apple 签名（正式版 PT 仍会拒绝加载）；
+          #   pace_ready=true 时保持 AAX 未签名，把 bundle 交给 Mac 本机补 PACE 签名。
           if [ -d "$ART/AAX/Fusion EQ.aaxplugin" ]; then
-            "${SIGN[@]}" "$ART/AAX/Fusion EQ.aaxplugin"
+            if [ "${PACE_READY:-}" = "true" ]; then
+              echo "[*] PACE-ready 模式：AAX 保持未签名，留给 Mac 本机 wraptool"
+              codesign --remove-signature "$ART/AAX/Fusion EQ.aaxplugin" 2>/dev/null || true
+            else
+              "${SIGN[@]}" "$ART/AAX/Fusion EQ.aaxplugin"
+            fi
           fi
 
       # =====================================================================
@@ -249,7 +267,7 @@ jobs:
       #  - KEYCHAIN_PATH 由「Import Apple signing certificate」步骤注入环境变量
       # =====================================================================
       - name: Package .pkg
-        if: always()
+        if: ${{ always() && inputs.pace_ready != true }}
         env:
           MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
           VERSION: ${{ steps.ver.outputs.version }}
@@ -262,7 +280,7 @@ jobs:
       #  凭证未配齐时跳过，仍产出未公证 PKG（保持旧行为）。
       # =====================================================================
       - name: Notarize & staple PKG
-        if: always()
+        if: ${{ always() && inputs.pace_ready != true }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -300,7 +318,7 @@ jobs:
       # if: always() 兜底：即便前面某步失败，只要 pkg 已生成也照常上传，
       # 确保总能拿到可安装的包；pkg 缺失时由 if-no-files-found: error 显式报错。
       - name: Upload artifact (pkg + checksum)
-        if: always()
+        if: ${{ always() && inputs.pace_ready != true }}
         uses: actions/upload-artifact@v4
         with:
           name: FusionEQ-macOS
@@ -309,9 +327,46 @@ jobs:
             FusionEQ-${{ steps.ver.outputs.version }}-macOS.pkg.sha256
           if-no-files-found: error
 
+      # =====================================================================
+      #  PACE-ready 产物（workflow_dispatch → pace_ready=true）
+      #  供 Mac 本机补 AAX 的 PACE/wraptool 签名：
+      #    - VST3 / AU / Standalone 已完成 Apple codesign（hardened runtime + 时间戳）
+      #    - AAX 保持未签名，wraptool 内部会自己调用 Apple codesign
+      #    - 只上传构建产物 zip，不产出 PKG（PKG 必须由 Mac 本机重新打包并重新公证）
+      # =====================================================================
+      - name: Package PACE-ready artefacts
+        if: ${{ always() && inputs.pace_ready == true }}
+        run: |
+          ART=build_mac/FusionEQ_artefacts/Release
+          if [ ! -d "$ART" ]; then
+            echo "[X] 构建产物不存在，无法产出 PACE-ready 包"
+            exit 1
+          fi
+          if [ ! -d "$ART/AAX/Fusion EQ.aaxplugin" ]; then
+            echo "[X] AAX 产物缺失（检查 AAX_SDK_REPO / AAX_SDK_PAT）"
+            exit 1
+          fi
+          # ditto 保留 bundle 内符号链接、扩展属性与可执行权限（zip -r 会破坏它们）
+          ditto -c -k --keepParent --norsrc "$ART" FusionEQ-PACE-ready.zip
+          shasum -a 256 FusionEQ-PACE-ready.zip > FusionEQ-PACE-ready.zip.sha256
+          ls -lh FusionEQ-PACE-ready.zip
+          cat FusionEQ-PACE-ready.zip.sha256
+          echo "[*] 确认 AAX 未签名（应输出 'code object is not signed at all'）:"
+          codesign -dv --verbose=2 "$ART/AAX/Fusion EQ.aaxplugin" 2>&1 | tail -3 || true
+
+      - name: Upload PACE-ready artefact
+        if: ${{ always() && inputs.pace_ready == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: FusionEQ-PACE-ready
+          path: |
+            FusionEQ-PACE-ready.zip
+            FusionEQ-PACE-ready.zip.sha256
+          if-no-files-found: error
+
       # ---- 打 tag 时同时发到 Release ----
       - name: Upload to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.pace_ready != true }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
